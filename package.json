@@ -1,6 +1,6 @@
 {
   "name": "kittydiff",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "A modern, minimalist open-source code reviewer with terminal interface",
   "type": "module",
   "module": "src/index.ts",
