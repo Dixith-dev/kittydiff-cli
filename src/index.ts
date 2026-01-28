@@ -345,22 +345,20 @@ async function main() {
   centerContent.add(repoSection)
 
   // ═══ STATS ═══
-  if (gitInfo.filesChanged > 0) {
-    const statsSection = new BoxRenderable(renderer, {
-      id: "stats-section",
-      flexDirection: "row",
-      alignItems: "center",
-      justifyContent: "center",
-      marginBottom: 2,
-    })
+  const statsSection = new BoxRenderable(renderer, {
+    id: "stats-section",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 2,
+  })
 
-    const statsText = new TextRenderable(renderer, {
-      id: "stats-text",
-      content: t`${fg(COLORS.textMuted)(gitInfo.filesChanged.toString())} ${fg(COLORS.textDim)("files")} ${fg(COLORS.textDim)("·")} ${fg(COLORS.success)("+" + gitInfo.insertions)} ${fg(COLORS.textDim)("·")} ${fg(COLORS.error)("-" + gitInfo.deletions)}`,
-    })
-    statsSection.add(statsText)
-    centerContent.add(statsSection)
-  }
+  const statsText = new TextRenderable(renderer, {
+    id: "stats-text",
+    content: t`${fg(COLORS.textMuted)(gitInfo.filesChanged.toString())} ${fg(COLORS.textDim)("files")} ${fg(COLORS.textDim)("·")} ${fg(COLORS.success)("+" + gitInfo.insertions)} ${fg(COLORS.textDim)("·")} ${fg(COLORS.error)("-" + gitInfo.deletions)}`,
+  })
+  statsSection.add(statsText)
+  centerContent.add(statsSection)
 
   // ═══ DIVIDER ═══
   const divider = new TextRenderable(renderer, {
