@@ -773,11 +773,11 @@ async function main() {
   }
 
   // Update functions
-  function startUpdateUI() {
+  async function startUpdateUI() {
     isUpdating = true
     paletteContainer.visible = false
     hintContainer.visible = false
-    updateContainer.show()
+    await updateContainer.show()
   }
 
   function hideUpdateUI() {
@@ -2081,6 +2081,14 @@ ${fg(COLORS.border)("  " + "─".repeat(statsRuleWidth) + "  ")}
 
         if (showStatus) {
           hideStatusUI()
+          return
+        }
+
+        // Handle update overlay enter
+        if (isUpdating) {
+          if (updateContainer.isUpdateAvailable()) {
+            updateContainer.startUpdate()
+          }
           return
         }
 
