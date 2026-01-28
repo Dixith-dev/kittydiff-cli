@@ -29,7 +29,7 @@ import { HelpContainer } from "./components/HelpContainer"
 import { UpdateContainer } from "./components/UpdateContainer"
 import { ModelSelector } from "./components/ModelSelector"
 import { HistoryContainer } from "./components/HistoryContainer"
-import { getRepositoryInfo, getFullDiff, getCommit, getRecentCommits, type ReviewType, type GitCommit } from "./core/git"
+import { getRepositoryInfo, getFullDiff, getCommit, getRecentCommits, getLocalBranches, type ReviewType, type GitCommit, type GitBranch } from "./core/git"
 import { ConfigManager } from "./core/config"
 import { HistoryManager } from "./core/history"
 import { ProxyManager } from "./core/proxymanager"
@@ -103,7 +103,7 @@ interface Command {
 
 const commands: Command[] = [
   { id: "review-uncommitted", name: "Review Changes", description: "Review all uncommitted changes", icon: "◎" },
-  { id: "review-branch", name: "Review Branch", description: "Review entire branch against main", icon: "◉" },
+  { id: "review-branch", name: "Review Branch", description: "Review current branch against another", icon: "◉" },
   { id: "review-commit", name: "Review Commit", description: "Review a specific commit by ID", icon: "◈" },
   { id: "review-all", name: "Review Codebase", description: "Review the entire codebase", icon: "◇" },
   { id: "status", name: "Git Status", description: "Show repository status", icon: "●" },
@@ -210,6 +210,16 @@ async function main() {
   let isLoadingCommits = false
   const COMMITS_PER_PAGE = 10
   const TOTAL_COMMITS_TO_FETCH = 50
+
+  // Branch selector state
+  let showBranchSelector = false
+  let allBranches: GitBranch[] = []
+  let filteredBranches: GitBranch[] = []
+  let selectedBranchIndex = 0
+  let branchScrollOffset = 0
+  let branchSearchQuery = ""
+  let isLoadingBranches = false
+  const BRANCHES_PER_PAGE = 10
 
   const gitInfo = await getRepositoryInfo()
 
@@ -569,6 +579,252 @@ async function main() {
   commitSelectorOverlay.add(commitSelectorHint)
 
   centerContent.add(commitSelectorOverlay)
+
+  // ═══ BRANCH SELECTOR OVERLAY ═══
+  const branchSelectorOverlay = new BoxRenderable(renderer, {
+    id: "branch-selector-overlay",
+    width: 70,
+    flexDirection: "column",
+    alignItems: "center",
+    visible: false,
+    border: true,
+    borderStyle: "rounded",
+    borderColor: COLORS.border,
+    paddingTop: 1,
+    paddingBottom: 1,
+    paddingLeft: 2,
+    paddingRight: 2,
+  })
+
+  const branchSelectorTitle = new TextRenderable(renderer, {
+    id: "branch-selector-title",
+    content: t`${fg(COLORS.primary)(bold("◉ Review Branch"))}  ${fg(COLORS.textMuted)("Select a base branch to diff against")}`,
+  })
+  branchSelectorOverlay.add(branchSelectorTitle)
+
+  // Search container
+  const branchSearchContainer = new BoxRenderable(renderer, {
+    id: "branch-search-container",
+    width: "100%",
+    height: 3,
+    flexDirection: "row",
+    alignItems: "center",
+    marginBottom: 0,
+    marginTop: 1,
+    border: true,
+    borderStyle: "rounded",
+    borderColor: COLORS.border,
+    paddingLeft: 1,
+  })
+
+  const branchSearchIcon = new TextRenderable(renderer, {
+    id: "branch-search-icon",
+    content: t`${fg(COLORS.primary)("🔍")} `,
+  })
+  branchSearchContainer.add(branchSearchIcon)
+
+  const branchSearchInput = new TextareaRenderable(renderer, {
+    id: "branch-search-input",
+    flexGrow: 1,
+    height: 1,
+    placeholder: "Filter by branch name...",
+    backgroundColor: "transparent",
+    focusedBackgroundColor: "transparent",
+    textColor: COLORS.text,
+    onContentChange: () => {
+      branchSearchQuery = branchSearchInput.plainText.toLowerCase().split("\n")[0]
+      selectedBranchIndex = 0
+      branchScrollOffset = 0
+      filteredBranches = allBranches.filter(b =>
+        b.name.toLowerCase().includes(branchSearchQuery)
+      )
+      renderBranchList()
+    }
+  })
+  branchSearchContainer.add(branchSearchInput)
+  branchSelectorOverlay.add(branchSearchContainer)
+
+  const branchSelectorSpacer = new BoxRenderable(renderer, { id: "branch-selector-spacer", height: 1 })
+  branchSelectorOverlay.add(branchSelectorSpacer)
+
+  const branchList = new BoxRenderable(renderer, {
+    id: "branch-list",
+    flexDirection: "column",
+    alignItems: "flex-start",
+    width: "100%",
+  })
+  branchSelectorOverlay.add(branchList)
+
+  const branchPaginationInfo = new TextRenderable(renderer, {
+    id: "branch-pagination-info",
+    content: "",
+    marginTop: 1,
+  })
+  branchSelectorOverlay.add(branchPaginationInfo)
+
+  const branchSelectorHint = new TextRenderable(renderer, {
+    id: "branch-selector-hint",
+    content: t`${fg(COLORS.primary)("↑↓")} ${fg(COLORS.textMuted)("navigate")}  ${fg(COLORS.primary)("↵")} ${fg(COLORS.textMuted)("review")}  ${fg(COLORS.primary)("esc")} ${fg(COLORS.textMuted)("cancel")}`,
+    marginTop: 1,
+  })
+  branchSelectorOverlay.add(branchSelectorHint)
+
+  centerContent.add(branchSelectorOverlay)
+
+  // Render branch list with pagination
+  function renderBranchList() {
+    const children = branchList.getChildren()
+    children.forEach((c) => branchList.remove(c.id))
+
+    if (isLoadingBranches) {
+      const loadingText = new TextRenderable(renderer, {
+        id: "branch-loading",
+        content: t`  ${fg(COLORS.textMuted)("Loading branches...")}`,
+      })
+      branchList.add(loadingText)
+      branchPaginationInfo.content = ""
+      return
+    }
+
+    if (filteredBranches.length === 0) {
+      const noBranches = new TextRenderable(renderer, {
+        id: "no-branches",
+        content: t`  ${fg(COLORS.textMuted)(branchSearchQuery ? "No matching branches found" : "No branches found in repository")}`,
+      })
+      branchList.add(noBranches)
+      branchPaginationInfo.content = ""
+      return
+    }
+
+    // Get visible branches based on scroll offset
+    const visibleBranches = filteredBranches.slice(branchScrollOffset, branchScrollOffset + BRANCHES_PER_PAGE)
+    const totalPages = Math.ceil(filteredBranches.length / BRANCHES_PER_PAGE)
+    const currentPage = Math.floor(branchScrollOffset / BRANCHES_PER_PAGE) + 1
+
+    visibleBranches.forEach((branch, i) => {
+      const actualIndex = branchScrollOffset + i
+      const isSelected = actualIndex === selectedBranchIndex
+
+      const row = new BoxRenderable(renderer, {
+        id: `branch-row-${actualIndex}`,
+        width: "100%",
+        flexDirection: "row",
+        paddingLeft: 1,
+        paddingRight: 1,
+        backgroundColor: isSelected ? COLORS.bgHover : "transparent",
+      })
+
+      const nameMaxLen = 50
+      const truncatedName = branch.name.length > nameMaxLen
+        ? branch.name.slice(0, nameMaxLen - 1) + "…"
+        : branch.name.padEnd(nameMaxLen)
+
+      const currentMarker = branch.isCurrent ? " (current)" : ""
+
+      const branchContent = new TextRenderable(renderer, {
+        id: `branch-content-${actualIndex}`,
+        content: t`${fg(isSelected ? COLORS.primary : COLORS.textDim)("›")} ${fg(isSelected ? COLORS.text : COLORS.textSecondary)(truncatedName)}${fg(COLORS.warning)(currentMarker)}`,
+      })
+      row.add(branchContent)
+      branchList.add(row)
+    })
+
+    // Show pagination info
+    if (totalPages > 1) {
+      branchPaginationInfo.content = t`  ${fg(COLORS.textDim)("Page")} ${fg(COLORS.primary)(currentPage.toString())} ${fg(COLORS.textDim)("of")} ${fg(COLORS.textDim)(totalPages.toString())}  ${fg(COLORS.textMuted)(`(${filteredBranches.length} branches)`)}`
+    } else {
+      branchPaginationInfo.content = t`  ${fg(COLORS.textMuted)(`${filteredBranches.length} branch${filteredBranches.length === 1 ? "" : "es"}`)}`
+    }
+  }
+
+  // Functions for branch selector
+  async function showBranchSelectorUI() {
+    showBranchSelector = true
+    selectedBranchIndex = 0
+    branchScrollOffset = 0
+    branchSearchQuery = ""
+    isLoadingBranches = true
+    paletteContainer.visible = false
+    hintContainer.visible = false
+    branchSelectorOverlay.visible = true
+    branchSearchInput.setText("")
+    branchSearchInput.focus()
+    renderBranchList()
+
+    // Fetch local branches
+    try {
+      allBranches = await getLocalBranches()
+      filteredBranches = [...allBranches]
+    } catch (error) {
+      allBranches = []
+      filteredBranches = []
+    }
+    isLoadingBranches = false
+    renderBranchList()
+  }
+
+  function hideBranchSelectorUI() {
+    showBranchSelector = false
+    branchSelectorOverlay.visible = false
+    branchSearchInput.blur()
+    paletteContainer.visible = true
+    hintContainer.visible = true
+  }
+
+  function navigateBranchUp() {
+    if (filteredBranches.length === 0) return
+
+    if (selectedBranchIndex <= 0) {
+      selectedBranchIndex = filteredBranches.length - 1
+      branchScrollOffset = Math.max(0, filteredBranches.length - BRANCHES_PER_PAGE)
+    } else {
+      selectedBranchIndex--
+      if (selectedBranchIndex < branchScrollOffset) {
+        branchScrollOffset = selectedBranchIndex
+      }
+    }
+    renderBranchList()
+  }
+
+  function navigateBranchDown() {
+    if (filteredBranches.length === 0) return
+
+    if (selectedBranchIndex >= filteredBranches.length - 1) {
+      selectedBranchIndex = 0
+      branchScrollOffset = 0
+    } else {
+      selectedBranchIndex++
+      if (selectedBranchIndex >= branchScrollOffset + BRANCHES_PER_PAGE) {
+        branchScrollOffset = selectedBranchIndex - BRANCHES_PER_PAGE + 1
+      }
+    }
+    renderBranchList()
+  }
+
+  function scrollBranchList(direction: 'up' | 'down') {
+    if (filteredBranches.length <= BRANCHES_PER_PAGE) return
+
+    if (direction === 'up') {
+      branchScrollOffset = Math.max(0, branchScrollOffset - 1)
+      if (selectedBranchIndex >= branchScrollOffset + BRANCHES_PER_PAGE) {
+        selectedBranchIndex = branchScrollOffset + BRANCHES_PER_PAGE - 1
+      }
+    } else {
+      const maxOffset = filteredBranches.length - BRANCHES_PER_PAGE
+      branchScrollOffset = Math.min(maxOffset, branchScrollOffset + 1)
+      if (selectedBranchIndex < branchScrollOffset) {
+        selectedBranchIndex = branchScrollOffset
+      }
+    }
+    renderBranchList()
+  }
+
+  function selectBranchForReview() {
+    if (filteredBranches.length === 0 || selectedBranchIndex >= filteredBranches.length) return
+    const selectedBranch = filteredBranches[selectedBranchIndex]
+    hideBranchSelectorUI()
+    startReviewAnimation("review-branch", undefined, selectedBranch.name)
+  }
 
   // Render commit list with pagination
   function renderCommitList() {
@@ -1602,7 +1858,7 @@ ${fg(COLORS.border)("  " + "─".repeat(statsRuleWidth) + "  ")}
   renderer.root.add(rootContainer)
 
   // ═══ REVIEW ANIMATION FUNCTIONS ═══
-  async function startReviewAnimation(commandId: string, commitHash?: string) {
+  async function startReviewAnimation(commandId: string, commitHash?: string, baseBranch?: string) {
     if (isReviewing) return
 
     isReviewing = true
@@ -1788,7 +2044,7 @@ ${fg(COLORS.border)("  " + "─".repeat(statsRuleWidth) + "  ")}
 
     let diffResult
     try {
-      diffResult = await getFullDiff(commandId as ReviewType, commitHash)
+      diffResult = await getFullDiff(commandId as ReviewType, commitHash, baseBranch)
     } catch (error) {
       reviewMessage.content = t`${fg(COLORS.error)("Failed to get diff: " + (error as Error).message)}`
       setTimeout(() => cancelReview(), 3000)
@@ -2050,6 +2306,41 @@ ${fg(COLORS.border)("  " + "─".repeat(statsRuleWidth) + "  ")}
         }
       }
 
+      // Handle arrow keys in branch selector
+      if (showBranchSelector) {
+        if (sequence === "\x1b[A" || sequence === "\x1bOA") {
+          navigateBranchUp()
+          return true
+        }
+        if (sequence === "\x1b[B" || sequence === "\x1bOB") {
+          navigateBranchDown()
+          return true
+        }
+        const sgrMatchBranch = sequence.match(/\x1b\[<(\d+);/)
+        if (sgrMatchBranch) {
+          const button = parseInt(sgrMatchBranch[1], 10)
+          if (button === 64) {
+            scrollBranchList('up')
+            return true
+          }
+          if (button === 65) {
+            scrollBranchList('down')
+            return true
+          }
+        }
+        if (sequence.startsWith("\x1b[M") && sequence.length >= 4) {
+          const btn = sequence.charCodeAt(3) - 32
+          if (btn === 64) {
+            scrollBranchList('up')
+            return true
+          }
+          if (btn === 65) {
+            scrollBranchList('down')
+            return true
+          }
+        }
+      }
+
       // Handle arrow keys in history overlay
       if (showHistory) {
         if (sequence === "\x1b[A" || sequence === "\x1bOA") {
@@ -2097,7 +2388,7 @@ ${fg(COLORS.border)("  " + "─".repeat(statsRuleWidth) + "  ")}
         }
       }
 
-      if (showPalette && !isReviewing && !showModelSelector && !showHelp && !showHistory) {
+      if (showPalette && !isReviewing && !showModelSelector && !showHelp && !showHistory && !showBranchSelector) {
         if (sequence === "\x1b[A" || sequence === "\x1bOA") {
           if (filteredCommands.length === 0) return true
           selectedIndex = selectedIndex <= 0
@@ -2198,6 +2489,12 @@ ${fg(COLORS.border)("  " + "─".repeat(statsRuleWidth) + "  ")}
           return
         }
 
+        // Handle branch selector escape
+        if (showBranchSelector) {
+          hideBranchSelectorUI()
+          return
+        }
+
         // Handle history overlay escape
         if (showHistory) {
           if (!historyContainer.goBack()) {
@@ -2254,6 +2551,12 @@ ${fg(COLORS.border)("  " + "─".repeat(statsRuleWidth) + "  ")}
           return
         }
 
+        // Handle branch selector enter
+        if (showBranchSelector) {
+          selectBranchForReview()
+          return
+        }
+
         // Handle history overlay enter
         if (showHistory) {
           historyContainer.select()
@@ -2270,9 +2573,11 @@ ${fg(COLORS.border)("  " + "─".repeat(statsRuleWidth) + "  ")}
           const selectedCmd = filteredCommands[selectedIndex]
           switch (selectedCmd.id) {
             case "review-uncommitted":
-            case "review-branch":
             case "review-all":
               startReviewAnimation(selectedCmd.id)
+              break
+            case "review-branch":
+              showBranchSelectorUI()
               break
             case "review-commit":
               showCommitSelectorUI()
@@ -2314,6 +2619,8 @@ ${fg(COLORS.border)("  " + "─".repeat(statsRuleWidth) + "  ")}
           modelSelector.navigateUp()
         } else if (showCommitSelector) {
           navigateCommitUp()
+        } else if (showBranchSelector) {
+          navigateBranchUp()
         } else if (showHistory) {
           historyContainer.navigateUp()
         } else if (isReviewing && resultsSection.visible) {
@@ -2338,6 +2645,8 @@ ${fg(COLORS.border)("  " + "─".repeat(statsRuleWidth) + "  ")}
           modelSelector.navigateDown()
         } else if (showCommitSelector) {
           navigateCommitDown()
+        } else if (showBranchSelector) {
+          navigateBranchDown()
         } else if (showHistory) {
           historyContainer.navigateDown()
         } else if (isReviewing && resultsSection.visible) {

@@ -50,6 +50,12 @@ export interface GitCommit {
   deletions: number
 }
 
+export interface GitBranch {
+  name: string
+  isCurrent: boolean
+  isRemote: boolean
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // REPOSITORY INFORMATION
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -135,6 +141,39 @@ export async function getRemoteUrl(remote: string = "origin"): Promise<string | 
     return result.stdout.trim()
   } catch {
     return null
+  }
+}
+
+/**
+ * Get all local branch names, sorted with current branch first
+ */
+export async function getLocalBranches(): Promise<GitBranch[]> {
+  try {
+    const result = await execAsync("git branch --format='%(refname:short)%09%(HEAD)'")
+    const lines = result.stdout.trim().split("\n").filter(Boolean)
+    const branches: GitBranch[] = []
+
+    for (const line of lines) {
+      const cleaned = line.replace(/^'|'$/g, "")
+      const [name, head] = cleaned.split("\t")
+      if (!name) continue
+      branches.push({
+        name: name.trim(),
+        isCurrent: head?.trim() === "*",
+        isRemote: false,
+      })
+    }
+
+    // Sort: current branch first, then alphabetical
+    branches.sort((a, b) => {
+      if (a.isCurrent && !b.isCurrent) return -1
+      if (!a.isCurrent && b.isCurrent) return 1
+      return a.name.localeCompare(b.name)
+    })
+
+    return branches
+  } catch {
+    return []
   }
 }
 
@@ -271,7 +310,7 @@ export async function getAllChanges(): Promise<GitFileChange[]> {
 /**
  * Get full unified diff content for a review type.
  */
-export async function getFullDiff(reviewType: string, commitHash?: string): Promise<{
+export async function getFullDiff(reviewType: string, commitHash?: string, baseBranch?: string): Promise<{
   diff: string
   files: GitFileChange[]
   commitInfo?: GitCommit
@@ -283,8 +322,9 @@ export async function getFullDiff(reviewType: string, commitHash?: string): Prom
   }
 
   if (reviewType === "review-branch") {
-    const files = await getBranchDiff("main")
-    const diff = (await execAsync("git diff main...HEAD")).stdout
+    const base = baseBranch || "main"
+    const files = await getBranchDiff(base)
+    const diff = (await execAsync(`git diff ${base}...HEAD`)).stdout
     return { diff, files }
   }
 
