@@ -18,12 +18,37 @@ export const DEFAULT_TOOLS_CONFIG: ToolsConfig = {
   run_check: { timeoutMs: 30000, allowedKinds: ['typecheck', 'test', 'lint', 'build'] },
 }
 
+export interface CodebaseReviewConfig {
+  maxFilesToSummarize: number
+  folderDepth: number
+}
+
+export const DEFAULT_CODEBASE_REVIEW_CONFIG: CodebaseReviewConfig = {
+  maxFilesToSummarize: 250,
+  folderDepth: 2,
+}
+
+const MAX_CODEBASE_FILES_TO_SUMMARIZE = 1000
+const MAX_CODEBASE_FOLDER_DEPTH = 6
+
+function toSafeInt(value: unknown, fallback: number): number {
+  const n = typeof value === 'number' ? value : Number(value)
+  if (!Number.isFinite(n)) return fallback
+  return Math.floor(n)
+}
+
+function clampInt(value: number, min: number, max: number): number {
+  if (!Number.isFinite(value)) return min
+  return Math.min(max, Math.max(min, Math.floor(value)))
+}
+
 export interface Config {
   litellm_proxy_url: string;
   litellm_proxy_key?: string;
   api_keys: Record<string, string>;
   selected_model?: string;
   tools?: Partial<ToolsConfig>;
+  codebase_review?: Partial<CodebaseReviewConfig>;
 }
 
 export class ConfigManager {
@@ -119,6 +144,31 @@ export class ConfigManager {
     };
   }
 
+  public getCodebaseReviewConfig(): CodebaseReviewConfig {
+    const merged = {
+      ...DEFAULT_CODEBASE_REVIEW_CONFIG,
+      ...(this.config.codebase_review || {}),
+    } as Record<string, unknown>
+
+    return {
+      maxFilesToSummarize: clampInt(
+        toSafeInt(merged.maxFilesToSummarize, DEFAULT_CODEBASE_REVIEW_CONFIG.maxFilesToSummarize),
+        1,
+        MAX_CODEBASE_FILES_TO_SUMMARIZE
+      ),
+      folderDepth: clampInt(
+        toSafeInt(merged.folderDepth, DEFAULT_CODEBASE_REVIEW_CONFIG.folderDepth),
+        1,
+        MAX_CODEBASE_FOLDER_DEPTH
+      ),
+    }
+  }
+
+  public setCodebaseReviewConfig(codebaseReview: Partial<CodebaseReviewConfig>) {
+    this.config.codebase_review = { ...this.config.codebase_review, ...codebaseReview }
+    this.save({})
+  }
+
   public setToolsConfig(tools: Partial<ToolsConfig>) {
     this.config.tools = { ...this.config.tools, ...tools };
     this.save({});
@@ -128,4 +178,3 @@ export class ConfigManager {
     return this.getToolsConfig().enabled;
   }
 }
-

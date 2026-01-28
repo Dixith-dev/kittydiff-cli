@@ -77,6 +77,21 @@ const DEFAULT_IGNORES = [
   '.next',
   'coverage',
   '.cache',
+  // Avoid leaking common secret material into LLM prompts
+  '.env',
+  '.env.*',
+  '.npmrc',
+  '.pypirc',
+  '.netrc',
+  '.git-credentials',
+  'id_rsa',
+  'id_ed25519',
+  '*.pem',
+  '*.key',
+  '*.p12',
+  '*.pfx',
+  '*.jks',
+  '*.kdbx',
 ]
 
 const CHECK_COMMANDS: Record<CheckKind, { cmd: string; args: string[] }> = {
@@ -178,6 +193,34 @@ function isBinaryFile(filePath: string): boolean {
   ]
   const ext = path.extname(filePath).toLowerCase()
   return binaryExtensions.includes(ext)
+}
+
+function isPotentialSecretPath(filePath: string): boolean {
+  const normalized = filePath.replace(/\\/g, '/')
+  const base = path.basename(normalized)
+
+  if (base === '.env') return true
+  if (base.startsWith('.env.') && base !== '.env.example') return true
+
+  const secretBasenames = new Set([
+    '.npmrc',
+    '.pypirc',
+    '.netrc',
+    '.git-credentials',
+    'id_rsa',
+    'id_ed25519',
+    'id_dsa',
+    'id_ecdsa',
+  ])
+  if (secretBasenames.has(base)) return true
+
+  const ext = path.extname(base).toLowerCase()
+  const secretExts = new Set(['.pem', '.key', '.p12', '.pfx', '.jks', '.kdbx'])
+  if (secretExts.has(ext)) return true
+
+  if (normalized.includes('/.aws/') && base === 'credentials') return true
+
+  return false
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -386,6 +429,10 @@ export async function readFile(
 
   const repoRoot = getRepoRoot()
   const fullPath = path.resolve(repoRoot, filePath)
+
+  if (isPotentialSecretPath(filePath)) {
+    return { success: false, error: 'Refusing to read potential secret file' }
+  }
 
   if (isBinaryFile(fullPath)) {
     return { success: false, error: 'Cannot read binary files' }

@@ -13,6 +13,7 @@ A CLI tool that reviews your code changes using AI and shows potential bugs righ
 ## Features
 
 - Review uncommitted changes
+- Review entire codebase (hierarchical map-reduce summaries + agentic grounding for large repos)
 - Review specific commits
 - Pick your AI model (Gemini 3, opus 4.5, gpt-5.2)
 - Copy bug reports to clipboard
@@ -31,6 +32,14 @@ bun install -g kittydiff
 cd your-repo
 kittydiff
 ```
+
+## Config
+
+Config is stored at `~/.kittydiff/config.json`.
+
+Useful knobs for codebase review:
+- `codebase_review.maxFilesToSummarize` (default: 250, max: 1000)
+- `codebase_review.folderDepth` (default: 2)
 
 ## License
 

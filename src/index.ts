@@ -33,7 +33,7 @@ import { getRepositoryInfo, getFullDiff, getCommit, getRecentCommits, type Revie
 import { ConfigManager } from "./core/config"
 import { HistoryManager } from "./core/history"
 import { ProxyManager } from "./core/proxymanager"
-import { reviewCode, generateFixDiff, type Bug, type AIReviewRequest } from "./backend/ai-reviewer"
+import { reviewCode, reviewCodebase, generateFixDiff, type Bug, type AIReviewRequest, type CodebaseReviewProgress } from "./backend/ai-reviewer"
 
 // Premium color palette
 const COLORS = {
@@ -321,27 +321,25 @@ async function main() {
   })
   repoSection.add(pathLine)
 
-  if (gitInfo.repoUrl) {
-    const repoLine = new TextRenderable(renderer, {
-      id: "repo-line",
-      content: t`${fg(COLORS.textMuted)("Repo URL")} ${fg(COLORS.textDim)("·")} ${fg(COLORS.text)(gitInfo.repoUrl)}`,
-      selectable: true,
-    })
-    repoSection.add(repoLine)
+  // Config file path (always shown)
+  const configPath = configManager.getConfigPath()
+  const displayConfigPath = homeDir && configPath.startsWith(homeDir)
+    ? "~" + configPath.slice(homeDir.length)
+    : configPath
+  const configLine = new TextRenderable(renderer, {
+    id: "config-line",
+    content: t`${fg(COLORS.textMuted)("Config")} ${fg(COLORS.textDim)("·")} ${fg(COLORS.text)(displayConfigPath)}`,
+    selectable: true,
+  })
+  repoSection.add(configLine)
 
+  if (gitInfo.repoUrl) {
     const branchLine = new TextRenderable(renderer, {
       id: "branch-line",
       content: t`${fg(COLORS.textMuted)("branch")} ${fg(COLORS.textDim)("·")} ${fg(COLORS.primary)(gitInfo.branch)}`,
       selectable: true,
     })
     repoSection.add(branchLine)
-  } else {
-    const noRepoLine = new TextRenderable(renderer, {
-      id: "no-repo-line",
-      content: t`${fg(COLORS.textMuted)("No git repository detected")}`,
-      selectable: true,
-    })
-    repoSection.add(noRepoLine)
   }
 
   centerContent.add(repoSection)
@@ -1645,7 +1643,148 @@ ${fg(COLORS.border)("  " + "─".repeat(statsRuleWidth) + "  ")}
       return
     }
 
-    // Get the diff based on review type
+    // Full codebase review (hierarchical map-reduce + agentic grounding)
+    if (commandId === "review-all") {
+      let currentPhase: Exclude<ReviewPhase, 'complete'> = 'scanning'
+      let kittyFrame = 0
+      const startTime = Date.now()
+
+      reviewMessage.content = t`${fg(COLORS.text)("Indexing repository...")}`
+      updateProgressBar(0.05)
+
+      // Simple animation loop (progress is controlled by actual work via callbacks)
+      reviewAnimationInterval = setInterval(() => {
+        const frames = getKittyFramesForPhase(currentPhase)
+        kittyFrame = (kittyFrame + 1) % frames.length
+        kittyArt.content = t`${fg(COLORS.primary)(frames[kittyFrame].join("\n"))}`
+      }, 200)
+
+      const phaseForStage = (stage: CodebaseReviewProgress['stage']): Exclude<ReviewPhase, 'complete'> => {
+        switch (stage) {
+          case 'indexing':
+            return 'scanning'
+          case 'mapping':
+            return 'hunting'
+          case 'summarizing':
+            return 'deepDive'
+          case 'reviewing':
+            return 'writing'
+          default:
+            return 'analyzing'
+        }
+      }
+
+      const onProgress = (p: CodebaseReviewProgress) => {
+        currentPhase = phaseForStage(p.stage)
+        reviewMessage.content = t`${fg(COLORS.text)(p.message)}`
+        const clamped = Math.max(0, Math.min(0.99, p.progress))
+        updateProgressBar(clamped)
+      }
+
+      const codebaseCfg = configManager.getCodebaseReviewConfig()
+      const runReview = () => reviewCodebase(
+        {
+          model: selectedModel,
+          maxFilesToSummarize: codebaseCfg.maxFilesToSummarize,
+          folderDepth: codebaseCfg.folderDepth,
+        },
+        configManager.getProxyUrl(),
+        configManager.getProxyKey(),
+        configManager.getToolsConfig(),
+        onProgress
+      )
+
+      try {
+        let aiResponse: Awaited<ReturnType<typeof reviewCodebase>>
+        try {
+          aiResponse = await runReview()
+        } catch (e) {
+          const message = (e as Error)?.message || ""
+          const looksLikeAuthError =
+            message.includes("401") ||
+            message.toLowerCase().includes("authenticationerror") ||
+            message.toLowerCase().includes("no cookie auth credentials")
+
+          if (!looksLikeAuthError) throw e
+
+          proxyManager.stop()
+          await proxyManager.initialize()
+          aiResponse = await runReview()
+        }
+
+        // Stop animation
+        if (reviewAnimationInterval) {
+          clearInterval(reviewAnimationInterval)
+          reviewAnimationInterval = null
+        }
+
+        updateProgressBar(1)
+        kittyArt.content = t`${fg(COLORS.primary)(KITTY_DONE[0].join("\n"))}`
+
+        const totalBugs = aiResponse.summary.critical + aiResponse.summary.major + aiResponse.summary.minor + aiResponse.summary.info
+        if (totalBugs === 0) {
+          reviewMessage.content = t`${fg(COLORS.success)(bold("Purrfect! No issues found~"))}`
+        } else {
+          reviewMessage.content = t`${fg(COLORS.success)(bold("Meow~ Found " + totalBugs + " things to look at!"))}`
+        }
+
+        const reviewResult: ReviewResult = {
+          critical: aiResponse.summary.critical,
+          major: aiResponse.summary.major,
+          minor: aiResponse.summary.minor,
+          info: aiResponse.summary.info,
+          filesScanned: aiResponse.filesScanned,
+          linesAnalyzed: aiResponse.linesAnalyzed,
+          timeMs: Date.now() - startTime,
+          bugs: aiResponse.bugs
+        }
+
+        // Codebase reviews are not diff-based; disable fix diff generation
+        lastReviewRequest = null
+
+        // Generate a meaningful summary for history
+        let historySummary: string
+        if (totalBugs === 0) {
+          historySummary = `Clean - ${reviewResult.filesScanned} files checked`
+        } else {
+          const topBug = aiResponse.bugs[0]
+          if (topBug) {
+            historySummary = topBug.title.slice(0, 50)
+          } else {
+            historySummary = `${totalBugs} issues in ${reviewResult.filesScanned} files`
+          }
+        }
+
+        historyManager.addEntry({
+          timestamp: Date.now(),
+          reviewType: commandId as ReviewType,
+          summary: historySummary,
+          repository: {
+            path: localPath,
+            displayPath,
+            repoUrl: gitInfo.repoUrl || null,
+            branch: gitInfo.branch,
+          },
+          results: reviewResult,
+          model: selectedModel,
+        })
+
+        setTimeout(() => showResults(reviewResult), 500)
+        return
+
+      } catch (error) {
+        if (reviewAnimationInterval) {
+          clearInterval(reviewAnimationInterval)
+          reviewAnimationInterval = null
+        }
+        kittyArt.content = t`${fg(COLORS.error)(KITTY_IDLE[0].join("\n"))}`
+        reviewMessage.content = t`${fg(COLORS.error)("AI review failed: " + (error as Error).message)}`
+        setTimeout(() => cancelReview(), 5000)
+        return
+      }
+    }
+
+    // Diff-based reviews
     reviewMessage.content = t`${fg(COLORS.text)(getRandomPhaseMessage('scanning'))}`
     updateProgressBar(0.1)
 
