@@ -12,6 +12,7 @@ import * as tools from "./tools"
 import type { ToolResult } from "./tools"
 import * as fs from "fs"
 import * as path from "path"
+import { isPotentialSecretPath } from "../core/utils"
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // TYPES
@@ -800,37 +801,6 @@ const BINARY_EXTENSIONS = new Set([
   '.ttf', '.otf', '.woff', '.woff2', '.eot',
 ])
 
-const SECRET_BASENAMES = new Set([
-  '.env',
-  '.npmrc',
-  '.pypirc',
-  '.netrc',
-  '.git-credentials',
-  'id_rsa',
-  'id_ed25519',
-  'id_dsa',
-  'id_ecdsa',
-])
-
-const SECRET_EXTENSIONS = new Set([
-  '.pem',
-  '.key',
-  '.p12',
-  '.pfx',
-  '.jks',
-  '.kdbx',
-])
-
-function isPotentialSecretPath(relPath: string): boolean {
-  const p = relPath.replace(/\\/g, "/")
-  const base = path.posix.basename(p)
-  if (SECRET_BASENAMES.has(base)) return true
-  if (base.startsWith(".env.") && base !== ".env.example") return true
-  const ext = path.posix.extname(base).toLowerCase()
-  if (SECRET_EXTENSIONS.has(ext)) return true
-  if (p.includes("/.aws/") && base === "credentials") return true
-  return false
-}
 
 const MAP_READ_MAX_BYTES = 80_000
 const MAP_SNIPPET_MAX_CHARS = 1400

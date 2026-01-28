@@ -6,6 +6,7 @@
 import { spawn } from "child_process"
 import * as fs from "fs"
 import * as path from "path"
+import { isPotentialSecretPath } from "../core/utils"
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // TYPES
@@ -195,33 +196,6 @@ function isBinaryFile(filePath: string): boolean {
   return binaryExtensions.includes(ext)
 }
 
-function isPotentialSecretPath(filePath: string): boolean {
-  const normalized = filePath.replace(/\\/g, '/')
-  const base = path.basename(normalized)
-
-  if (base === '.env') return true
-  if (base.startsWith('.env.') && base !== '.env.example') return true
-
-  const secretBasenames = new Set([
-    '.npmrc',
-    '.pypirc',
-    '.netrc',
-    '.git-credentials',
-    'id_rsa',
-    'id_ed25519',
-    'id_dsa',
-    'id_ecdsa',
-  ])
-  if (secretBasenames.has(base)) return true
-
-  const ext = path.extname(base).toLowerCase()
-  const secretExts = new Set(['.pem', '.key', '.p12', '.pfx', '.jks', '.kdbx'])
-  if (secretExts.has(ext)) return true
-
-  if (normalized.includes('/.aws/') && base === 'credentials') return true
-
-  return false
-}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // TOOL: search_repo

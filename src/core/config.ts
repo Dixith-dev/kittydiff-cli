@@ -178,3 +178,4 @@ export class ConfigManager {
     return this.getToolsConfig().enabled;
   }
 }
+

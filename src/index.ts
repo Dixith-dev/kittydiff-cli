@@ -1282,7 +1282,7 @@ ${fg(COLORS.border)("  " + "─".repeat(statsRuleWidth) + "  ")}
       return Math.max(8, Math.min(26, rows - 14))
     })()
 
-    const contentWidth = 52
+    const contentWidth = 64
 
     clearContainer(resultsGrid)
 
@@ -1344,7 +1344,7 @@ ${fg(COLORS.border)("  " + "─".repeat(statsRuleWidth) + "  ")}
       return Math.max(8, Math.min(26, rows - 14))
     })()
 
-    const contentWidth = 52
+    const contentWidth = 64
 
     clearContainer(resultsGrid)
 
@@ -2145,8 +2145,19 @@ ${fg(COLORS.border)("  " + "─".repeat(statsRuleWidth) + "  ")}
         return true
       }
 
-      if (resultsSection.visible && (key.name === "c" || key.sequence === "c" || key.sequence === "C")) {
-        if (maybeCopyFromKey()) return
+      if (key.name === "c" || key.sequence === "c" || key.sequence === "C") {
+        // Handle copy in history detail view
+        if (showHistory && historyContainer.getCurrentView() === 'detail') {
+          const content = historyContainer.copyCurrentReview()
+          if (content) {
+            historyContainer.showCopyToast(copyToClipboard(content))
+          }
+          return
+        }
+        // Handle copy in results views
+        if (resultsSection.visible) {
+          if (maybeCopyFromKey()) return
+        }
       }
 
       // Tab key for model selector pagination

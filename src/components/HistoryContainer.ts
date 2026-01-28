@@ -36,6 +36,7 @@ export class HistoryContainer {
   private title: TextRenderable
   private list: BoxRenderable
   private hint: TextRenderable
+  private copyToastTimeout: ReturnType<typeof setTimeout> | null = null
 
   private view: HistoryView = 'list'
   private entries: HistoryEntry[] = []
@@ -414,7 +415,92 @@ export class HistoryContainer {
       t`${fg(this.colors.textMuted)("Total")} ${fg(this.colors.text)(total.toString().padStart(3))}   ${fg(this.colors.textDim)("│")}   ${fg(this.colors.textMuted)("Files")} ${fg(this.colors.text)(this.currentEntry.results.filesScanned.toString().padStart(3))}   ${fg(this.colors.textDim)("│")}   ${fg(this.colors.textMuted)("Time")} ${fg(this.colors.text)(timeSeconds + "s")}`
     )
 
-    this.hint.content = t`${fg(this.colors.primary)("↑↓")} ${fg(this.colors.textMuted)("navigate")}  ${fg(this.colors.primary)("↵")} ${fg(this.colors.textMuted)("view bugs")}  ${fg(this.colors.primary)("esc")} ${fg(this.colors.textMuted)("back")}`
+    this.hint.content = t`${fg(this.colors.primary)("↑↓")} ${fg(this.colors.textMuted)("navigate")}  ${fg(this.colors.primary)("↵")} ${fg(this.colors.textMuted)("view bugs")}  ${fg(this.colors.primary)("c")} ${fg(this.colors.textMuted)("copy all")}  ${fg(this.colors.primary)("esc")} ${fg(this.colors.textMuted)("back")}`
+  }
+
+  public copyCurrentReview(): string | null {
+    if (!this.currentEntry) return null
+
+    const entry = this.currentEntry
+    const total = entry.results.critical + entry.results.major + entry.results.minor + entry.results.info
+
+    const lines: string[] = [
+      `Code Review - ${this.getReviewTypeLabel(entry.reviewType)}`,
+      `Repository: ${entry.repository.displayPath}`,
+      `Branch: ${entry.repository.branch || 'unknown'}`,
+      `Date: ${new Date(entry.timestamp).toLocaleString()}`,
+      `Model: ${entry.model || 'unknown'}`,
+      ``,
+      `Summary:`,
+      `  Critical: ${entry.results.critical}`,
+      `  Major: ${entry.results.major}`,
+      `  Minor: ${entry.results.minor}`,
+      `  Info: ${entry.results.info}`,
+      `  Total: ${total}`,
+      `  Files Scanned: ${entry.results.filesScanned}`,
+      ``,
+    ]
+
+    if (entry.commitInfo) {
+      lines.push(
+        `Commit: ${entry.commitInfo.shortHash}`,
+        `Message: ${entry.commitInfo.message}`,
+        `Author: ${entry.commitInfo.author}`,
+        ``
+      )
+    }
+
+    if (entry.results.bugs.length > 0) {
+      lines.push(`Issues (${entry.results.bugs.length}):`, ``)
+      entry.results.bugs.forEach((bug, i) => {
+        const config = SEVERITY_CONFIG[bug.severity]
+        lines.push(
+          `#${i + 1} [${config.label}] ${bug.title}`,
+          `  File: ${bug.file}`,
+          `  Lines: ${bug.startLine} → ${bug.endLine}`,
+          `  Description: ${bug.description}`,
+          `  Suggestion: ${bug.suggestion}`,
+          ``
+        )
+      })
+    } else {
+      lines.push(`No issues found.`)
+    }
+
+    return lines.join('\n')
+  }
+
+  public getCurrentView(): HistoryView {
+    return this.view
+  }
+
+  public getCurrentEntry(): HistoryEntry | null {
+    return this.currentEntry
+  }
+
+  public showCopyToast(success: boolean) {
+    if (this.copyToastTimeout) {
+      clearTimeout(this.copyToastTimeout)
+      this.copyToastTimeout = null
+    }
+
+    this.hint.content = success
+      ? t`${fg(this.colors.success)("⧉ Copied to clipboard")}`
+      : t`${fg(this.colors.error)("⧉ Copy failed (no clipboard tool found)")}`
+
+    this.copyToastTimeout = setTimeout(() => {
+      this.copyToastTimeout = null
+      // Restore original hint based on current view
+      if (this.view === 'list') {
+        this.hint.content = t`${fg(this.colors.primary)("↑↓")} ${fg(this.colors.textMuted)("navigate")}  ${fg(this.colors.primary)("↵")} ${fg(this.colors.textMuted)("view")}  ${fg(this.colors.primary)("esc")} ${fg(this.colors.textMuted)("close")}`
+      } else if (this.view === 'detail') {
+        this.hint.content = t`${fg(this.colors.primary)("↑↓")} ${fg(this.colors.textMuted)("navigate")}  ${fg(this.colors.primary)("↵")} ${fg(this.colors.textMuted)("view bugs")}  ${fg(this.colors.primary)("c")} ${fg(this.colors.textMuted)("copy all")}  ${fg(this.colors.primary)("esc")} ${fg(this.colors.textMuted)("back")}`
+      } else if (this.view === 'bugList') {
+        this.hint.content = t`${fg(this.colors.primary)("↑↓")} ${fg(this.colors.textMuted)("navigate")}  ${fg(this.colors.primary)("↵")} ${fg(this.colors.textMuted)("details")}  ${fg(this.colors.primary)("esc")} ${fg(this.colors.textMuted)("back")}`
+      } else if (this.view === 'bugDetail') {
+        this.hint.content = t`${fg(this.colors.primary)("esc")} ${fg(this.colors.textMuted)("back to list")}`
+      }
+    }, 1200)
   }
 
   private renderBugList() {
