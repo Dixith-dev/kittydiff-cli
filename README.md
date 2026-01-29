@@ -33,6 +33,25 @@ cd your-repo
 kittydiff
 ```
 
+### Headless review (CLI)
+
+```bash
+# Review uncommitted changes
+kittydiff review
+
+# Review current branch against main
+kittydiff review branch
+
+# Review current branch against a specific base branch
+kittydiff review branch develop
+
+# Review a specific commit
+kittydiff review commit <hash>
+
+# Full codebase review
+kittydiff review codebase
+```
+
 ## Config
 
 Config is stored at `~/.kittydiff/config.json`.

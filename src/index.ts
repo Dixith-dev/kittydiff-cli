@@ -34,6 +34,7 @@ import { ConfigManager } from "./core/config"
 import { HistoryManager } from "./core/history"
 import { ProxyManager } from "./core/proxymanager"
 import { reviewCode, reviewCodebase, generateFixDiff, type Bug, type AIReviewRequest, type CodebaseReviewProgress } from "./backend/ai-reviewer"
+import { runCli } from "./cli"
 
 // Premium color palette
 const COLORS = {
@@ -2677,4 +2678,7 @@ ${fg(COLORS.border)("  " + "─".repeat(statsRuleWidth) + "  ")}
   renderer.start()
 }
 
-main().catch(console.error)
+const handled = await runCli(process.argv.slice(2))
+if (!handled) {
+  main().catch(console.error)
+}
