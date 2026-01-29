@@ -27,7 +27,7 @@ export class HelpContainer {
   ) {
     this.overlay = new BoxRenderable(renderer, {
       id: "help-overlay",
-      width: 72,
+      width: 82,
       flexDirection: "column",
       alignItems: "center",
       visible: false,
@@ -72,7 +72,7 @@ export class HelpContainer {
     const children = this.content.getChildren()
     children.forEach((c) => this.content.remove(c.id))
 
-    const dividerWidth = 64
+    const dividerWidth = 74
 
     // Divider line
     const topDivider = new TextRenderable(this.renderer, {
