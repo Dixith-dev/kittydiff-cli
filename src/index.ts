@@ -148,6 +148,7 @@ async function main() {
     try { proxyManager.stop() } catch { }
     isRendererActive = false
     try { clearInterval(animationInterval) } catch { }
+    try { clearInterval(gitStatsInterval) } catch { }
     try {
       process.stdout.write('\x1b[?1006l')
       process.stdout.write('\x1b[?1000l')
@@ -2252,6 +2253,17 @@ ${fg(COLORS.border)("  " + "─".repeat(statsRuleWidth) + "  ")}
       clearInterval(animationInterval)
     }
   }, 600)
+
+  // ═══ GIT STATS POLLING ═══
+  const gitStatsInterval = setInterval(async () => {
+    if (!isRendererActive) return
+    try {
+      const updated = await getRepositoryInfo()
+      statsText.content = t`${fg(COLORS.textMuted)(updated.filesChanged.toString())} ${fg(COLORS.textDim)("files")} ${fg(COLORS.textDim)("·")} ${fg(COLORS.success)("+" + updated.insertions)} ${fg(COLORS.textDim)("·")} ${fg(COLORS.error)("-" + updated.deletions)}`
+    } catch {
+      // Ignore polling errors
+    }
+  }, 3000)
 
     // ═══ INPUT HANDLERS ═══
     ; (renderer as any).addInputHandler((sequence: string) => {

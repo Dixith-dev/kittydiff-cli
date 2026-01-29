@@ -152,13 +152,6 @@ export const PHASE_MESSAGES: Record<Exclude<ReviewPhase, 'complete'>, string[]> 
   ],
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// HELPER FUNCTIONS
-// ═══════════════════════════════════════════════════════════════════════════════
-
-/**
- * Get a random message for a given review phase
- */
 export function getRandomPhaseMessage(phase: Exclude<ReviewPhase, 'complete'>): string {
   const messages = PHASE_MESSAGES[phase]
   return messages[Math.floor(Math.random() * messages.length)]
