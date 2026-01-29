@@ -117,6 +117,18 @@ function isNewerVersion(newVersion: string, currentVersion: string): boolean {
 export async function performUpdate(
   onProgress: UpdateProgressCallback
 ): Promise<{ success: boolean; error?: string }> {
+  // If running under bun, unlink first to clear any stale bun-link registrations
+  // that would shadow the npm-installed version
+  if (isBunRuntime()) {
+    await new Promise<void>((res) => {
+      const unlink = spawn("bun", ["unlink", PACKAGE_NAME], {
+        stdio: 'ignore',
+      })
+      unlink.on('close', () => res())
+      unlink.on('error', () => res())
+    })
+  }
+
   return new Promise((resolve) => {
     onProgress({
       status: 'downloading',
