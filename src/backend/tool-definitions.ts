@@ -113,7 +113,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
           args: {
             type: 'string',
             description:
-              'Additional arguments to pass to the command (optional). Example: "--only src/auth.test.ts"',
+              'Additional arguments are disabled for safety and will be rejected.',
           },
           timeoutMs: {
             type: 'number',

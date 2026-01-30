@@ -3,10 +3,19 @@
  * Provides git operations needed for code review functionality
  */
 
-import { exec } from "child_process"
+import { execFile } from "child_process"
 import { promisify } from "util"
 
-const execAsync = promisify(exec)
+const execFileAsync = promisify(execFile)
+
+const DEFAULT_MAX_BUFFER = 50 * 1024 * 1024
+
+async function execGit(args: string[]): Promise<string> {
+  const { stdout } = await execFileAsync("git", args, {
+    maxBuffer: DEFAULT_MAX_BUFFER,
+  })
+  return stdout
+}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // TYPES
@@ -65,7 +74,7 @@ export interface GitBranch {
  */
 export async function isGitRepository(): Promise<boolean> {
   try {
-    await execAsync("git rev-parse --git-dir")
+    await execGit(["rev-parse", "--git-dir"])
     return true
   } catch {
     return false
@@ -84,8 +93,8 @@ export async function getRepositoryInfo(): Promise<GitRepositoryInfo> {
     let deletions = 0
 
     try {
-      const remoteResult = await execAsync("git remote get-url origin")
-      repoUrl = remoteResult.stdout.trim()
+      const remoteResult = await execGit(["remote", "get-url", "origin"])
+      repoUrl = remoteResult.trim()
       // Normalize repo URL format
       repoUrl = repoUrl
         .replace(/^https:\/\/(github\.com|gitlab\.com|bitbucket\.org)\//, "")
@@ -97,16 +106,16 @@ export async function getRepositoryInfo(): Promise<GitRepositoryInfo> {
     }
 
     try {
-      const branchResult = await execAsync("git branch --show-current")
-      branch = branchResult.stdout.trim() || "main"
+      const branchResult = await execGit(["branch", "--show-current"])
+      branch = branchResult.trim() || "main"
     } catch {
       // Default to main
     }
 
     try {
       // Use numstat so we can reliably sum insertions/deletions
-      const diffResult = await execAsync("git diff --numstat HEAD")
-      const stats = parseDiffStats(diffResult.stdout)
+      const diffResult = await execGit(["diff", "--numstat", "HEAD"])
+      const stats = parseDiffStats(diffResult)
       filesChanged = stats.filesChanged
       insertions = stats.insertions
       deletions = stats.deletions
@@ -125,8 +134,8 @@ export async function getRepositoryInfo(): Promise<GitRepositoryInfo> {
  */
 export async function getCurrentBranch(): Promise<string> {
   try {
-    const result = await execAsync("git branch --show-current")
-    return result.stdout.trim() || "main"
+    const result = await execGit(["branch", "--show-current"])
+    return result.trim() || "main"
   } catch {
     return "main"
   }
@@ -137,8 +146,8 @@ export async function getCurrentBranch(): Promise<string> {
  */
 export async function getRemoteUrl(remote: string = "origin"): Promise<string | null> {
   try {
-    const result = await execAsync(`git remote get-url ${remote}`)
-    return result.stdout.trim()
+    const result = await execGit(["remote", "get-url", remote])
+    return result.trim()
   } catch {
     return null
   }
@@ -149,8 +158,8 @@ export async function getRemoteUrl(remote: string = "origin"): Promise<string | 
  */
 export async function getLocalBranches(): Promise<GitBranch[]> {
   try {
-    const result = await execAsync("git branch --format='%(refname:short)%09%(HEAD)'")
-    const lines = result.stdout.trim().split("\n").filter(Boolean)
+    const result = await execGit(["branch", "--format=%(refname:short)%09%(HEAD)"])
+    const lines = result.trim().split("\n").filter(Boolean)
     const branches: GitBranch[] = []
 
     for (const line of lines) {
@@ -186,8 +195,8 @@ export async function getLocalBranches(): Promise<GitBranch[]> {
  */
 export async function getUncommittedChanges(): Promise<GitFileChange[]> {
   try {
-    const result = await execAsync("git diff --name-status HEAD")
-    const lines = result.stdout.trim().split("\n").filter(Boolean)
+    const result = await execGit(["diff", "--name-status", "HEAD"])
+    const lines = result.trim().split("\n").filter(Boolean)
 
     const changes: GitFileChange[] = []
 
@@ -198,8 +207,8 @@ export async function getUncommittedChanges(): Promise<GitFileChange[]> {
         const fileStatus = status === 'A' ? 'added' : status === 'M' ? 'modified' : 'deleted'
 
         // Get stats for this file
-        const statsResult = await execAsync(`git diff --numstat HEAD -- "${path}"`)
-        const stats = parseFileStats(statsResult.stdout)
+        const statsResult = await execGit(["diff", "--numstat", "HEAD", "--", path])
+        const stats = parseFileStats(statsResult)
 
         changes.push({
           path,
@@ -226,8 +235,8 @@ export async function getBranchDiff(baseBranch: string = "main"): Promise<GitFil
       return []
     }
 
-    const result = await execAsync(`git diff --name-status ${baseBranch}...${currentBranch}`)
-    const lines = result.stdout.trim().split("\n").filter(Boolean)
+    const result = await execGit(["diff", "--name-status", `${baseBranch}...${currentBranch}`])
+    const lines = result.trim().split("\n").filter(Boolean)
 
     const changes: GitFileChange[] = []
 
@@ -238,8 +247,14 @@ export async function getBranchDiff(baseBranch: string = "main"): Promise<GitFil
         const fileStatus = status === 'A' ? 'added' : status === 'M' ? 'modified' : 'deleted'
 
         // Get stats for this file
-        const statsResult = await execAsync(`git diff --numstat ${baseBranch}...${currentBranch} -- "${path}"`)
-        const stats = parseFileStats(statsResult.stdout)
+        const statsResult = await execGit([
+          "diff",
+          "--numstat",
+          `${baseBranch}...${currentBranch}`,
+          "--",
+          path,
+        ])
+        const stats = parseFileStats(statsResult)
 
         changes.push({
           path,
@@ -262,11 +277,11 @@ export async function getBranchDiff(baseBranch: string = "main"): Promise<GitFil
 export async function getCommitDiff(commitHash: string): Promise<GitFileChange[]> {
   try {
     // Get parent commit
-    const parentResult = await execAsync(`git rev-parse ${commitHash}^`)
-    const parentHash = parentResult.stdout.trim()
+    const parentResult = await execGit(["rev-parse", `${commitHash}^`])
+    const parentHash = parentResult.trim()
 
-    const result = await execAsync(`git diff --name-status ${parentHash} ${commitHash}`)
-    const lines = result.stdout.trim().split("\n").filter(Boolean)
+    const result = await execGit(["diff", "--name-status", parentHash, commitHash])
+    const lines = result.trim().split("\n").filter(Boolean)
 
     const changes: GitFileChange[] = []
 
@@ -277,8 +292,8 @@ export async function getCommitDiff(commitHash: string): Promise<GitFileChange[]
         const fileStatus = status === 'A' ? 'added' : status === 'M' ? 'modified' : 'deleted'
 
         // Get stats for this file
-        const statsResult = await execAsync(`git diff --numstat ${parentHash} ${commitHash} -- "${path}"`)
-        const stats = parseFileStats(statsResult.stdout)
+        const statsResult = await execGit(["diff", "--numstat", parentHash, commitHash, "--", path])
+        const stats = parseFileStats(statsResult)
 
         changes.push({
           path,
@@ -317,27 +332,27 @@ export async function getFullDiff(reviewType: string, commitHash?: string, baseB
 }> {
   if (reviewType === "review-uncommitted") {
     const files = await getUncommittedChanges()
-    const diff = (await execAsync("git diff HEAD")).stdout
+    const diff = await execGit(["diff", "HEAD"])
     return { diff, files }
   }
 
   if (reviewType === "review-branch") {
     const base = baseBranch || "main"
     const files = await getBranchDiff(base)
-    const diff = (await execAsync(`git diff ${base}...HEAD`)).stdout
+    const diff = await execGit(["diff", `${base}...HEAD`])
     return { diff, files }
   }
 
   if (reviewType === "review-commit") {
     if (!commitHash) return { diff: "", files: [] }
     const files = await getCommitDiff(commitHash)
-    const diff = (await execAsync(`git show ${commitHash} --pretty=format:`)).stdout
+    const diff = await execGit(["show", commitHash, "--pretty=format:"])
     return { diff, files, commitInfo: await getCommit(commitHash) }
   }
 
   if (reviewType === "review-all") {
     const files = await getAllChanges()
-    const diff = (await execAsync("git diff main...HEAD")).stdout
+    const diff = await execGit(["diff", "main...HEAD"])
     return { diff, files }
   }
 
@@ -351,10 +366,15 @@ export type ReviewType =
   | "review-all"
 
 export async function getCommit(hash: string): Promise<GitCommit> {
-  const pretty = (await execAsync(`git show -s --format=%H%n%h%n%an%n%ad%n%s ${hash}`)).stdout.trim().split("\n")
+  const pretty = (await execGit([
+    "show",
+    "-s",
+    "--format=%H%n%h%n%an%n%ad%n%s",
+    hash,
+  ])).trim().split("\n")
   const [fullHash, shortHash, author, date, message] = pretty
 
-  const numstat = (await execAsync(`git show --numstat --format= ${hash}`)).stdout
+  const numstat = await execGit(["show", "--numstat", "--format=", hash])
   const stats = parseDiffStats(numstat)
 
   return {
@@ -371,7 +391,12 @@ export async function getCommit(hash: string): Promise<GitCommit> {
 
 export async function getRecentCommits(limit = 50): Promise<GitCommit[]> {
   try {
-    const log = (await execAsync(`git log -n ${limit} --pretty=format:%H%x09%h%x09%an%x09%ad%x09%s`)).stdout.trim()
+    const log = (await execGit([
+      "log",
+      "-n",
+      String(limit),
+      "--pretty=format:%H%x09%h%x09%an%x09%ad%x09%s",
+    ])).trim()
     if (!log) return []
     const lines = log.split("\n")
     const commits: GitCommit[] = []

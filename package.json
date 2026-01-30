@@ -19,7 +19,8 @@
   "author": "Dixith",
   "dependencies": {
     "@opentui/core": "^0.1.0",
-    "js-yaml": "^4.1.0"
+    "js-yaml": "^4.1.0",
+    "kittydiff": "^0.1.8"
   },
   "keywords": [
     "tui",

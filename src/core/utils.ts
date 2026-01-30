@@ -25,6 +25,16 @@ const SECRET_EXTENSIONS = new Set([
   ".kdbx",
 ])
 
+const SECRET_PATH_KEYWORDS = [
+  "/secret/",
+  "/secrets/",
+  "credential",
+  "credentials",
+  "token",
+  "private",
+  "cert",
+]
+
 /**
  * Check if a file path potentially contains secrets/credentials.
  * Used to prevent leaking sensitive files into LLM prompts.
@@ -40,6 +50,8 @@ export function isPotentialSecretPath(filePath: string): boolean {
   if (SECRET_EXTENSIONS.has(ext)) return true
 
   if (normalized.includes("/.aws/") && base === "credentials") return true
+  const normalizedLower = normalized.toLowerCase()
+  if (SECRET_PATH_KEYWORDS.some((keyword) => normalizedLower.includes(keyword))) return true
 
   return false
 }

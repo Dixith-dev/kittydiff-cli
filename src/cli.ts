@@ -11,6 +11,7 @@ import {
   type GitCommit,
 } from "./core/git"
 import { reviewCode, reviewCodebase, type Bug } from "./backend/ai-reviewer"
+import { computeHistorySummary } from "./core/review-history"
 
 export type CliFormat = "text" | "json"
 
@@ -276,17 +277,14 @@ function printJsonResult(output: ReviewOutput): void {
 }
 
 async function ensureProxyReady(proxyManager: ProxyManager): Promise<boolean> {
-  await proxyManager.initialize()
+  try {
+    await proxyManager.initialize()
+  } catch (error) {
+    console.error((error as Error).message)
+    return false
+  }
   if (proxyManager.isHealthy) return true
   return proxyManager.waitForHealth(10000)
-}
-
-function computeHistorySummary(totalBugs: number, filesScanned: number, commitInfo?: GitCommit, bugs: Bug[] = []): string {
-  if (commitInfo?.message) return commitInfo.message.slice(0, 50)
-  if (totalBugs === 0) return `Clean - ${filesScanned} files checked`
-  const topBug = bugs[0]
-  if (topBug) return topBug.title.slice(0, 50)
-  return `${totalBugs} issues in ${filesScanned} files`
 }
 
 function toReviewType(mode: ReviewMode): ReviewType {
@@ -357,7 +355,7 @@ async function runReviewCli(args: string[]): Promise<boolean> {
 
   const configManager = new ConfigManager()
   const historyManager = new HistoryManager()
-  const proxyManager = new ProxyManager()
+  const proxyManager = new ProxyManager(configManager.getProxyPort())
 
   const selectedModel = options.model || configManager.getSelectedModel()
   if (!selectedModel) {

@@ -44,12 +44,15 @@ function clampInt(value: number, min: number, max: number): number {
 
 export interface Config {
   litellm_proxy_url: string;
+  litellm_proxy_port?: number;
   litellm_proxy_key?: string;
   api_keys: Record<string, string>;
   selected_model?: string;
   tools?: Partial<ToolsConfig>;
   codebase_review?: Partial<CodebaseReviewConfig>;
 }
+
+const DEFAULT_PROXY_PORT = 4000
 
 export class ConfigManager {
   private configPath: string;
@@ -110,7 +113,20 @@ export class ConfigManager {
   }
 
   public getProxyUrl(): string {
-    return this.config.litellm_proxy_url || "http://localhost:4000";
+    const explicitUrl = this.config.litellm_proxy_url;
+    if (explicitUrl && explicitUrl !== "http://localhost:4000") {
+      return explicitUrl;
+    }
+    const port = this.getProxyPort();
+    return `http://localhost:${port}`;
+  }
+
+  public getProxyPort(): number {
+    const envPort = process.env.KITTYDIFF_PROXY_PORT;
+    const envValue = envPort ? Number(envPort) : NaN;
+    const configValue = this.config.litellm_proxy_port;
+    const port = Number.isFinite(envValue) ? envValue : Number(configValue);
+    return clampInt(toSafeInt(port, DEFAULT_PROXY_PORT), 1, 65535);
   }
 
   public getProxyKey(): string | undefined {
@@ -178,4 +194,3 @@ export class ConfigManager {
     return this.getToolsConfig().enabled;
   }
 }
-

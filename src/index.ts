@@ -30,11 +30,13 @@ import { UpdateContainer } from "./components/UpdateContainer"
 import { ModelSelector } from "./components/ModelSelector"
 import { HistoryContainer } from "./components/HistoryContainer"
 import { getRepositoryInfo, getFullDiff, getCommit, getRecentCommits, getLocalBranches, type ReviewType, type GitCommit, type GitBranch } from "./core/git"
+import { commands } from "./core/commands"
 import { ConfigManager } from "./core/config"
 import { HistoryManager } from "./core/history"
 import { ProxyManager } from "./core/proxymanager"
 import { reviewCode, reviewCodebase, generateFixDiff, type Bug, type AIReviewRequest, type CodebaseReviewProgress } from "./backend/ai-reviewer"
 import { runCli } from "./cli"
+import { computeHistorySummary } from "./core/review-history"
 
 // Premium color palette
 const COLORS = {
@@ -95,25 +97,6 @@ const SEVERITY_CONFIG = {
 
 type ResultsView = 'summary' | 'bugList' | 'bugDetail' | 'bugFixDiff'
 
-interface Command {
-  id: string
-  name: string
-  description: string
-  icon: string
-}
-
-const commands: Command[] = [
-  { id: "review-uncommitted", name: "Review Changes", description: "Review all uncommitted changes", icon: "◎" },
-  { id: "review-branch", name: "Review Branch", description: "Review current branch against another", icon: "◉" },
-  { id: "review-commit", name: "Review Commit", description: "Review a specific commit by ID", icon: "◈" },
-  { id: "review-all", name: "Review Codebase", description: "Review the entire codebase", icon: "◇" },
-  { id: "status", name: "Git Status", description: "Show repository status", icon: "●" },
-  { id: "setup", name: "Setup", description: "Configure AI provider and models", icon: "⚙" },
-  { id: "history", name: "History", description: "Browse past code reviews", icon: "↺" },
-  { id: "update", name: "Update", description: "Check for updates", icon: "↻" },
-  { id: "help", name: "Help", description: "Show all commands and shortcuts", icon: "?" },
-]
-
 async function main() {
   const renderer = await createCliRenderer({
     targetFps: 60,
@@ -172,7 +155,7 @@ async function main() {
   // Config, History & Proxy Manager
   const configManager = new ConfigManager()
   const historyManager = new HistoryManager()
-  const proxyManager = new ProxyManager()
+  const proxyManager = new ProxyManager(configManager.getProxyPort())
 
   // Start proxy initialization immediately in background (cached promise)
   // This runs while UI loads, so proxy is likely ready when user starts a review
@@ -1998,18 +1981,12 @@ ${fg(COLORS.border)("  " + "─".repeat(statsRuleWidth) + "  ")}
         // Codebase reviews are not diff-based; disable fix diff generation
         lastReviewRequest = null
 
-        // Generate a meaningful summary for history
-        let historySummary: string
-        if (totalBugs === 0) {
-          historySummary = `Clean - ${reviewResult.filesScanned} files checked`
-        } else {
-          const topBug = aiResponse.bugs[0]
-          if (topBug) {
-            historySummary = topBug.title.slice(0, 50)
-          } else {
-            historySummary = `${totalBugs} issues in ${reviewResult.filesScanned} files`
-          }
-        }
+        const historySummary = computeHistorySummary(
+          totalBugs,
+          reviewResult.filesScanned,
+          undefined,
+          aiResponse.bugs
+        )
 
         historyManager.addEntry({
           timestamp: Date.now(),
@@ -2174,23 +2151,12 @@ ${fg(COLORS.border)("  " + "─".repeat(statsRuleWidth) + "  ")}
         model: selectedModel,
       }
 
-      // Generate a meaningful summary for history
-      let historySummary: string
-      if (diffResult.commitInfo?.message) {
-        // For commit reviews, use the commit message
-        historySummary = diffResult.commitInfo.message.slice(0, 50)
-      } else if (totalBugs === 0) {
-        // Clean review
-        historySummary = `Clean - ${reviewResult.filesScanned} files checked`
-      } else {
-        // Summarize findings
-        const topBug = aiResponse.bugs[0]
-        if (topBug) {
-          historySummary = topBug.title.slice(0, 50)
-        } else {
-          historySummary = `${totalBugs} issues in ${reviewResult.filesScanned} files`
-        }
-      }
+      const historySummary = computeHistorySummary(
+        totalBugs,
+        reviewResult.filesScanned,
+        diffResult.commitInfo,
+        aiResponse.bugs
+      )
 
       // Save to history
       historyManager.addEntry({

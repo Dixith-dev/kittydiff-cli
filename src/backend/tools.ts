@@ -112,15 +112,26 @@ function getRepoRoot(): string {
 
 function isPathWithinRepo(filePath: string): boolean {
   const repoRoot = getRepoRoot()
-  const resolved = path.resolve(repoRoot, filePath)
+  let repoRootReal = repoRoot
+  try {
+    repoRootReal = fs.realpathSync(repoRoot)
+  } catch {
+    // Fall back to repoRoot if realpath fails
+  }
 
-  // Use path.relative to get the relative path from repo root
-  const relativePath = path.relative(repoRoot, resolved)
+  const resolved = path.isAbsolute(filePath)
+    ? filePath
+    : path.resolve(repoRootReal, filePath)
+  let resolvedReal = resolved
+  try {
+    if (fs.existsSync(resolved)) {
+      resolvedReal = fs.realpathSync(resolved)
+    }
+  } catch {
+    // If path doesn't exist yet, validate using the resolved path
+  }
 
-  // Path is outside repo if:
-  // 1. It starts with '..' (goes up from repo root)
-  // 2. It's an absolute path (on Windows, path.relative returns absolute for different drives)
-  // 3. It equals '..' exactly
+  const relativePath = path.relative(repoRootReal, resolvedReal)
   if (relativePath.startsWith('..') || path.isAbsolute(relativePath)) {
     return false
   }
@@ -397,23 +408,34 @@ export async function readFile(
     return { success: false, error: 'File path is required' }
   }
 
-  if (!isPathWithinRepo(filePath)) {
-    return { success: false, error: 'File path must be within the repository' }
-  }
-
   const repoRoot = getRepoRoot()
   const fullPath = path.resolve(repoRoot, filePath)
 
-  if (isPotentialSecretPath(filePath)) {
+  let realPath: string
+  try {
+    realPath = fs.realpathSync(fullPath)
+  } catch (err) {
+    const error = err as NodeJS.ErrnoException
+    if (error.code === 'ENOENT') {
+      return { success: false, error: `File not found: ${filePath}` }
+    }
+    return { success: false, error: `Failed to resolve file path: ${error.message}` }
+  }
+
+  if (!isPathWithinRepo(realPath)) {
+    return { success: false, error: 'File path must be within the repository' }
+  }
+
+  if (isPotentialSecretPath(filePath) || isPotentialSecretPath(realPath)) {
     return { success: false, error: 'Refusing to read potential secret file' }
   }
 
-  if (isBinaryFile(fullPath)) {
+  if (isBinaryFile(realPath)) {
     return { success: false, error: 'Cannot read binary files' }
   }
 
   try {
-    const stat = await fs.promises.stat(fullPath)
+    const stat = await fs.promises.stat(realPath)
 
     if (!stat.isFile()) {
       return { success: false, error: 'Path is not a file' }
@@ -423,7 +445,7 @@ export async function readFile(
       // Allow reading up to 2x maxBytes initially, then truncate
     }
 
-    const content = await fs.promises.readFile(fullPath, 'utf-8')
+    const content = await fs.promises.readFile(realPath, 'utf-8')
     const allLines = content.split('\n')
     const totalLines = allLines.length
 
@@ -483,12 +505,11 @@ export async function runCheck(
     const repoRoot = getRepoRoot()
     const cmdArgs = [...commandConfig.args]
 
-    // Add additional args if provided (sanitize by splitting on spaces)
-    if (args) {
-      const extraArgs = args.split(/\s+/).filter(Boolean)
-      // Only allow safe arguments (no shell metacharacters)
-      const safeArgs = extraArgs.filter((arg) => !/[;&|`$(){}]/.test(arg))
-      cmdArgs.push(...safeArgs)
+    if (args && args.trim().length > 0) {
+      return {
+        success: false,
+        error: 'Additional arguments are disabled for safety. Use the built-in check kinds only.',
+      }
     }
 
     return new Promise((resolve) => {

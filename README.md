@@ -60,6 +60,9 @@ Useful knobs for codebase review:
 - `codebase_review.maxFilesToSummarize` (default: 250, max: 1000)
 - `codebase_review.folderDepth` (default: 2)
 
+Proxy configuration:
+- `litellm_proxy_port` (default: 4000). You can also set `KITTYDIFF_PROXY_PORT`.
+
 ## License
 
 MIT
