@@ -33,7 +33,17 @@ cd your-repo
 kittydiff
 ```
 
+This launches the interactive TUI where you can:
+- **Review uncommitted changes** — Review your current working directory changes
+- **Review branch** — Compare current branch against main (or specify a base branch)
+- **Review commit** — Review a specific commit by hash
+- **Review codebase** — Full hierarchical review of your entire codebase
+- **History** — View past reviews
+- **Settings** — Configure AI model and other options
+
 ### Headless review (CLI)
+
+Run reviews directly from the command line without the TUI:
 
 ```bash
 # Review uncommitted changes
@@ -51,6 +61,17 @@ kittydiff review commit <hash>
 # Full codebase review
 kittydiff review codebase
 ```
+
+### Commands Reference
+
+| Command | Description |
+|---------|-------------|
+| `kittydiff` | Launch interactive TUI |
+| `kittydiff review` | Review uncommitted changes (headless) |
+| `kittydiff review branch [base]` | Review branch against main or specified base |
+| `kittydiff review commit <hash>` | Review a specific commit |
+| `kittydiff review codebase` | Review entire codebase hierarchically |
+| `kittydiff --help` | Show help information |
 
 ## Config
 
