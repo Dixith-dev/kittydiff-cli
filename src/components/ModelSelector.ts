@@ -30,18 +30,61 @@ type LiteLLMModel = {
 };
 
 export async function fetchAvailableModels(baseURL: string, apiKey?: string): Promise<LiteLLMModel[]> {
-  const res = await fetch(`${baseURL}/v1/models`, {
-    headers: {
-      Authorization: `Bearer ${apiKey ?? "sk-noop"}`,
-    },
-  });
+  const maxAttempts = 3;
+  let lastError: Error | undefined;
 
-  if (!res.ok) {
-    throw new Error(`Failed to fetch models: ${res.status} ${res.statusText}`);
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 60000); // Increased to 60s for slower proxies
+    try {
+      const res = await fetch(`${baseURL}/v1/models`, {
+        headers: {
+          Authorization: `Bearer ${apiKey ?? "sk-noop"}`,
+        },
+        signal: controller.signal,
+      });
+
+      if (!res.ok) {
+        // Retry on server errors
+        if ((res.status === 502 || res.status === 503 || res.status === 504) && attempt < maxAttempts - 1) {
+          await new Promise(r => setTimeout(r, 1000 * Math.pow(2, attempt)));
+          continue;
+        }
+        throw new Error(`Failed to fetch models: ${res.status} ${res.statusText}`);
+      }
+
+      const json = await res.json() as { data?: LiteLLMModel[]; object?: string };
+
+      // Handle different response formats
+      let models: LiteLLMModel[] = [];
+      if (Array.isArray(json.data)) {
+        models = json.data;
+      } else if (Array.isArray(json)) {
+        // Some proxies return the array directly
+        models = json as LiteLLMModel[];
+      } else {
+        throw new Error('Unexpected response format from models endpoint');
+      }
+
+      // Filter out invalid entries and log for debugging
+      const validModels = models.filter(m => m && typeof m.id === 'string');
+      if (validModels.length !== models.length) {
+        console.error(`[kittydiff] Filtered out ${models.length - validModels.length} invalid model entries`);
+      }
+
+      return validModels;
+    } catch (err) {
+      lastError = err as Error;
+      if (attempt < maxAttempts - 1) {
+        await new Promise(r => setTimeout(r, 1000 * Math.pow(2, attempt)));
+        continue;
+      }
+    } finally {
+      clearTimeout(timeoutId);
+    }
   }
 
-  const json = await res.json() as { data: LiteLLMModel[] };
-  return json.data;
+  throw lastError ?? new Error('Failed to fetch models after retries');
 }
 
 export function groupModelsByProvider(models: LiteLLMModel[]): Provider[] {
@@ -49,14 +92,23 @@ export function groupModelsByProvider(models: LiteLLMModel[]): Provider[] {
 
   for (const m of models) {
     const [providerId, ...rest] = m.id.split("/");
-    // If no slash, skip providerless models (don't show "Other" provider)
-    if (!rest.length) continue;
-    const modelName = rest.join("/");
-    const key = providerId;
+
+    let key: string;
+    let modelName: string;
+
+    if (!rest.length) {
+      // No provider prefix - use owned_by as provider or fall back to "other"
+      key = m.owned_by?.toLowerCase().replace(/\s+/g, "_") || "other";
+      modelName = m.id;
+    } else {
+      key = providerId;
+      modelName = rest.join("/");
+    }
 
     if (!map.has(key)) {
       let name = key.charAt(0).toUpperCase() + key.slice(1);
       if (key === "gemini") name = "Google";
+      if (key === "other") name = "Other";
 
       map.set(key, {
         id: key,
@@ -73,7 +125,15 @@ export function groupModelsByProvider(models: LiteLLMModel[]): Provider[] {
     });
   }
 
-  return Array.from(map.values());
+  // Sort providers: alphabetical, but "Other" always at the end
+  const providers = Array.from(map.values());
+  providers.sort((a, b) => {
+    if (a.id === "other") return 1;
+    if (b.id === "other") return -1;
+    return a.name.localeCompare(b.name);
+  });
+
+  return providers;
 }
 
 export class ModelSelector {
@@ -229,9 +289,20 @@ export class ModelSelector {
       const proxyUrl = this.configManager.getProxyUrl();
       const proxyKey = this.configManager.getProxyKey();
       const models = await fetchAvailableModels(proxyUrl, proxyKey);
+
+      // Debug: log how many models were fetched
+      console.error(`[kittydiff] Fetched ${models.length} models from ${proxyUrl}/v1/models`);
+
       this.providers = groupModelsByProvider(models);
+
+      // Debug: log provider breakdown
+      for (const provider of this.providers) {
+        console.error(`[kittydiff] Provider "${provider.name}": ${provider.models.length} models`);
+      }
+
       this.filteredProviders = [...this.providers];
     } catch (err: any) {
+      console.error(`[kittydiff] Error loading models:`, err);
       this.filteredProviders = []; // Clear list
       const errorMsg = new TextRenderable(this.renderer, {
         id: "error-msg",

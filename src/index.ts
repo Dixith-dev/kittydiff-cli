@@ -1862,14 +1862,25 @@ ${fg(COLORS.border)("  " + "─".repeat(statsRuleWidth) + "  ")}
     try {
       await proxyManager.initialize() // Returns cached promise if already started
     } catch {
-      // Init failed, but we'll check health anyway
+      // Init failed - retry once (promise cache was reset on failure)
+      try {
+        await proxyManager.initialize()
+      } catch {
+        // Will fall through to health check below
+      }
     }
 
-    // If already healthy from init, this returns immediately
-    // Otherwise polls for up to 10 seconds
-    const isHealthy = proxyManager.isHealthy || await proxyManager.waitForHealth()
+    // Validate proxy is actually reachable right now (handles proxy crashes)
+    // If proxy died since init, ensureHealthy will attempt a restart
+    let isHealthy = proxyManager.isHealthy
     if (!isHealthy) {
-      reviewMessage.content = t`${fg(COLORS.error)("Failed to connect to AI proxy. Please check your setup.")}`
+      isHealthy = await proxyManager.waitForHealth(20000)
+    } else {
+      // Even if cached as healthy, do a live check to catch proxy crashes
+      isHealthy = await proxyManager.ensureHealthy()
+    }
+    if (!isHealthy) {
+      reviewMessage.content = t`${fg(COLORS.error)("Failed to connect to AI proxy. Check ~/.kittydiff/litellm.log for details.")}`
       setTimeout(() => cancelReview(), 3000)
       return
     }
@@ -1939,15 +1950,25 @@ ${fg(COLORS.border)("  " + "─".repeat(statsRuleWidth) + "  ")}
           aiResponse = await runReview()
         } catch (e) {
           const message = (e as Error)?.message || ""
-          const looksLikeAuthError =
+          const isRecoverable =
             message.includes("401") ||
             message.toLowerCase().includes("authenticationerror") ||
-            message.toLowerCase().includes("no cookie auth credentials")
+            message.toLowerCase().includes("no cookie auth credentials") ||
+            message.toLowerCase().includes("econnrefused") ||
+            message.toLowerCase().includes("econnreset") ||
+            message.toLowerCase().includes("fetch failed") ||
+            message.toLowerCase().includes("failed to connect")
 
-          if (!looksLikeAuthError) throw e
+          if (!isRecoverable) throw e
 
+          // Brief backoff before restarting proxy to avoid rapid restart loops
+          await new Promise(r => setTimeout(r, 2000))
+
+          // Restart proxy and retry
           proxyManager.stop()
           await proxyManager.initialize()
+          const healthy = await proxyManager.ensureHealthy()
+          if (!healthy) throw new Error('AI proxy is not reachable after restart')
           aiResponse = await runReview()
         }
 
@@ -2100,16 +2121,25 @@ ${fg(COLORS.border)("  " + "─".repeat(statsRuleWidth) + "  ")}
         aiResponse = await runReview()
       } catch (e) {
         const message = (e as Error)?.message || ""
-        const looksLikeAuthError =
+        const isRecoverable =
           message.includes("401") ||
           message.toLowerCase().includes("authenticationerror") ||
-          message.toLowerCase().includes("no cookie auth credentials")
+          message.toLowerCase().includes("no cookie auth credentials") ||
+          message.toLowerCase().includes("econnrefused") ||
+          message.toLowerCase().includes("econnreset") ||
+          message.toLowerCase().includes("fetch failed") ||
+          message.toLowerCase().includes("failed to connect")
 
-        if (!looksLikeAuthError) throw e
+        if (!isRecoverable) throw e
 
-        // Restart proxy with fresh config
+        // Brief backoff before restarting proxy to avoid rapid restart loops
+        await new Promise(r => setTimeout(r, 2000))
+
+        // Restart proxy with fresh config and retry
         proxyManager.stop()
         await proxyManager.initialize()
+        const healthy = await proxyManager.ensureHealthy()
+        if (!healthy) throw new Error('AI proxy is not reachable after restart')
         aiResponse = await runReview()
       }
 

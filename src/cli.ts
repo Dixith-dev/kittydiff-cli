@@ -281,10 +281,16 @@ async function ensureProxyReady(proxyManager: ProxyManager): Promise<boolean> {
     await proxyManager.initialize()
   } catch (error) {
     console.error((error as Error).message)
-    return false
+    // Retry once - initialization failure may be transient
+    try {
+      await proxyManager.initialize()
+    } catch (retryError) {
+      console.error(`Retry also failed: ${(retryError as Error).message}`)
+      return false
+    }
   }
   if (proxyManager.isHealthy) return true
-  return proxyManager.waitForHealth(10000)
+  return proxyManager.waitForHealth(20000)
 }
 
 function toReviewType(mode: ReviewMode): ReviewType {

@@ -13,6 +13,7 @@ interface LiteLLMConfigModel {
 
 interface LiteLLMConfig {
   model_list?: LiteLLMConfigModel[];
+  general_settings?: Record<string, any>;
 }
 
 export class ProxyManager {
@@ -98,17 +99,89 @@ export class ProxyManager {
 
     if (!Array.isArray(config.model_list)) config.model_list = [];
 
-    // Remove deprecated/problematic configurations
-    config.model_list = config.model_list.filter(m => m?.model_name !== "groq/*" && m?.model_name !== "google/*");
+    // Map of provider names to their LiteLLM provider prefix and environment variable
+    const providerConfigMap: Record<string, { prefix: string; env: string }> = {
+      openai: { prefix: "openai", env: "OPENAI_API_KEY" },
+      anthropic: { prefix: "anthropic", env: "ANTHROPIC_API_KEY" },
+      gemini: { prefix: "gemini", env: "GEMINI_API_KEY" },
+      google: { prefix: "gemini", env: "GEMINI_API_KEY" },
+      openrouter: { prefix: "openrouter", env: "OPENROUTER_API_KEY" },
+      groq: { prefix: "groq", env: "GROQ_API_KEY" },
+      cohere: { prefix: "cohere", env: "COHERE_API_KEY" },
+      mistral: { prefix: "mistral", env: "MISTRAL_API_KEY" },
+      ai21: { prefix: "ai21", env: "AI21_API_KEY" },
+      together_ai: { prefix: "together_ai", env: "TOGETHERAI_API_KEY" },
+      togetherai: { prefix: "together_ai", env: "TOGETHERAI_API_KEY" },
+      perplexity: { prefix: "perplexity", env: "PERPLEXITYAI_API_KEY" },
+      deepseek: { prefix: "deepseek", env: "DEEPSEEK_API_KEY" },
+      azure: { prefix: "azure", env: "AZURE_API_KEY" },
+      bedrock: { prefix: "bedrock", env: "AWS_ACCESS_KEY_ID" },
+      vertex_ai: { prefix: "vertex_ai", env: "VERTEXAI_PROJECT" },
+      vertexai: { prefix: "vertex_ai", env: "VERTEXAI_PROJECT" },
+      replicate: { prefix: "replicate", env: "REPLICATE_API_KEY" },
+      huggingface: { prefix: "huggingface", env: "HUGGINGFACE_API_KEY" },
+      baseten: { prefix: "baseten", env: "BASETEN_API_KEY" },
+      nlp_cloud: { prefix: "nlp_cloud", env: "NLPCLOUD_API_KEY" },
+      ollama: { prefix: "ollama", env: "OLLAMA_API_BASE" },
+      vllm: { prefix: "vllm", env: "VLLM_API_BASE" },
+      xai: { prefix: "xai", env: "XAI_API_KEY" },
+    };
 
-    const requiredModels: Array<{ name: string; env: string }> = [
+    // Load user's configured API keys
+    const userApiKeys = this.loadApiKeysFromUserConfig();
+
+    // Build model configurations from user's API keys
+    for (const [provider, apiKey] of Object.entries(userApiKeys)) {
+      if (!apiKey) continue;
+
+      const configInfo = providerConfigMap[provider.toLowerCase()];
+      if (!configInfo) {
+        // Unknown provider - try to use provider name as prefix directly
+        const prefix = provider.toLowerCase().replace(/[^a-z0-9_]/g, '_');
+        const envVar = `${prefix.toUpperCase()}_API_KEY`;
+        const wildcardModel = `${prefix}/*`;
+
+        const exists = config.model_list.some(m => m?.model_name === wildcardModel);
+        if (!exists) {
+          config.model_list.push({
+            model_name: wildcardModel,
+            litellm_params: {
+              model: wildcardModel,
+              api_key: `os.environ/${envVar}`,
+            },
+            litellm_settings: {
+              check_provider_endpoint: false,
+            },
+          });
+        }
+        continue;
+      }
+
+      const wildcardModel = `${configInfo.prefix}/*`;
+      const exists = config.model_list.some(m => m?.model_name === wildcardModel);
+      if (!exists) {
+        config.model_list.push({
+          model_name: wildcardModel,
+          litellm_params: {
+            model: wildcardModel,
+            api_key: `os.environ/${configInfo.env}`,
+          },
+          litellm_settings: {
+            check_provider_endpoint: false,
+          },
+        });
+      }
+    }
+
+    // Ensure core providers are always available if their env vars are set
+    const coreProviders = [
       { name: "openai/*", env: "OPENAI_API_KEY" },
       { name: "anthropic/*", env: "ANTHROPIC_API_KEY" },
       { name: "gemini/*", env: "GEMINI_API_KEY" },
       { name: "openrouter/*", env: "OPENROUTER_API_KEY" },
     ];
 
-    for (const req of requiredModels) {
+    for (const req of coreProviders) {
       const exists = config.model_list.some(m => m?.model_name === req.name);
       if (!exists) {
         config.model_list.push({
@@ -131,18 +204,48 @@ export class ProxyManager {
       model.litellm_settings.check_provider_endpoint = false;
     }
 
+    // Remove general_settings.master_key if it references an unset env var,
+    // as this causes authentication failures when the proxy forwards requests
+    if (config.general_settings) {
+      if (config.general_settings.master_key === 'os.environ/LITELLM_MASTER_KEY') {
+        const envKey = process.env.LITELLM_MASTER_KEY;
+        if (!envKey || envKey.trim() === '') {
+          delete config.general_settings.master_key;
+        }
+      }
+      // Remove general_settings entirely if empty
+      if (Object.keys(config.general_settings).length === 0) {
+        delete config.general_settings;
+      }
+    }
+
     fs.writeFileSync(this.configPath, yaml.dump(config, { noRefs: true }));
+  }
+
+  /**
+   * Resolve the litellm executable: prefer the `litellm` binary on PATH,
+   * fall back to `python3 -m litellm` (which fails on some installations).
+   */
+  private resolveLiteLLMCommand(): { command: string; args: string[] } {
+    try {
+      const { execSync } = require('child_process') as typeof import('child_process');
+      const litellmPath = execSync('command -v litellm', { encoding: 'utf8', timeout: 5000 }).trim();
+      if (litellmPath) {
+        return { command: litellmPath, args: [] };
+      }
+    } catch {
+      // litellm binary not found on PATH
+    }
+    // Fallback: python3 -m litellm (may not work on all installations)
+    return { command: 'python3', args: ['-m', 'litellm'] };
   }
 
   public async checkAndInstall(): Promise<boolean> {
     return new Promise((resolve) => {
-      // Check if litellm exists and has proxy dependencies
-      const check = spawn('sh', ['-c', 'python3 -c "import litellm, apscheduler"']);
-
-      check.on('close', (code) => {
-        if (code === 0) {
-          resolve(true);
-        } else {
+      // First check if the litellm CLI binary is available
+      const checkBinary = spawn('sh', ['-c', 'command -v litellm >/dev/null 2>&1']);
+      checkBinary.on('close', (binaryCode) => {
+        const attemptInstall = () => {
           const hasPip = spawn('sh', ['-c', 'command -v pip3 >/dev/null 2>&1']);
           hasPip.on('close', (pipCode) => {
             if (pipCode !== 0) {
@@ -151,14 +254,47 @@ export class ProxyManager {
               return;
             }
 
-          console.log("LiteLLM dependencies not found. Installing via pip...");
-          const install = spawn('pip3', ['install', '--user', 'litellm[proxy]']);
+            console.log("LiteLLM dependencies not found. Installing via pip...");
+            const install = spawn('pip3', ['install', '--user', 'litellm[proxy]']);
 
-          install.on('close', (installCode) => {
-            resolve(installCode === 0);
+            install.on('close', (installCode) => {
+              resolve(installCode === 0);
+            });
           });
+        };
+
+        const checkPythonDeps = () => {
+          const check = spawn('sh', ['-c', 'python3 -c "import litellm, apscheduler"']);
+          check.on('close', (code) => {
+            if (code === 0) {
+              resolve(true);
+            } else {
+              attemptInstall();
+            }
           });
+        };
+
+        if (binaryCode === 0) {
+          const checkPython = spawn('sh', ['-c', 'command -v python3 >/dev/null 2>&1']);
+          checkPython.on('close', (pythonCode) => {
+            if (pythonCode === 0) {
+              checkPythonDeps();
+            } else {
+              const checkCli = spawn('litellm', ['--help']);
+              checkCli.on('close', (cliCode) => {
+                if (cliCode === 0) {
+                  resolve(true);
+                } else {
+                  attemptInstall();
+                }
+              });
+            }
+          });
+          return;
         }
+
+        // Fallback: check if litellm python module exists
+        checkPythonDeps();
       });
     });
   }
@@ -182,6 +318,7 @@ export class ProxyManager {
   /**
    * Initialize proxy: ensure config, check/install, and start.
    * Returns a cached promise so multiple calls don't restart.
+   * Resets on failure so subsequent calls can retry.
    */
   public initialize(): Promise<void> {
     if (this.initPromise) return this.initPromise;
@@ -192,7 +329,11 @@ export class ProxyManager {
       if (installed) {
         await this.start();
       }
-    })();
+    })().catch((err) => {
+      // Reset so next call can retry instead of returning the cached failure
+      this.initPromise = null;
+      throw err;
+    });
 
     return this.initPromise;
   }
@@ -223,23 +364,48 @@ export class ProxyManager {
 
         const apiKeys = this.loadApiKeysFromUserConfig();
         const env: NodeJS.ProcessEnv = { ...process.env };
+
+        // Comprehensive mapping of provider names to their environment variables
         const providerEnvVarByKey: Record<string, string> = {
           openrouter: 'OPENROUTER_API_KEY',
           anthropic: 'ANTHROPIC_API_KEY',
           openai: 'OPENAI_API_KEY',
-          google: 'GOOGLE_API_KEY',
+          google: 'GEMINI_API_KEY',
           gemini: 'GEMINI_API_KEY',
           groq: 'GROQ_API_KEY',
+          cohere: 'COHERE_API_KEY',
+          mistral: 'MISTRAL_API_KEY',
+          ai21: 'AI21_API_KEY',
+          together_ai: 'TOGETHERAI_API_KEY',
+          togetherai: 'TOGETHERAI_API_KEY',
+          perplexity: 'PERPLEXITYAI_API_KEY',
+          deepseek: 'DEEPSEEK_API_KEY',
+          azure: 'AZURE_API_KEY',
+          bedrock: 'AWS_ACCESS_KEY_ID',
+          vertex_ai: 'VERTEXAI_PROJECT',
+          vertexai: 'VERTEXAI_PROJECT',
+          replicate: 'REPLICATE_API_KEY',
+          huggingface: 'HUGGINGFACE_API_KEY',
+          baseten: 'BASETEN_API_KEY',
+          nlp_cloud: 'NLPCLOUD_API_KEY',
+          ollama: 'OLLAMA_API_BASE',
+          vllm: 'VLLM_API_BASE',
+          xai: 'XAI_API_KEY',
         };
 
         for (const [provider, key] of Object.entries(apiKeys)) {
-          const envVar = providerEnvVarByKey[provider.toLowerCase()];
+          let envVar = providerEnvVarByKey[provider.toLowerCase()];
+          // For custom providers not in the known list, generate env var name dynamically
+          if (!envVar) {
+            const prefix = provider.toLowerCase().replace(/[^a-z0-9_]/g, '_');
+            envVar = `${prefix.toUpperCase()}_API_KEY`;
+          }
           if (envVar && key) env[envVar] = key;
         }
 
-        this.process = spawn('python3', [
-          '-m',
-          'litellm',
+        const { command, args: prefixArgs } = this.resolveLiteLLMCommand();
+        this.process = spawn(command, [
+          ...prefixArgs,
           '--config', this.configPath,
           '--port', String(this.port),
         ], { env });
@@ -252,16 +418,68 @@ export class ProxyManager {
         });
       }
 
-      const ok = await this.waitForHealth(10000); // Reduced from 15s to 10s
-      if (ok) this._isRunning = true;
-    })().finally(() => {
-      this.startPromise = null;
+      const ok = await this.waitForHealth(20000); // 20s to allow slow proxy startups
+      if (!ok) {
+        throw new Error(
+          'AI proxy started but failed health check. Check ~/.kittydiff/litellm.log for errors. ' +
+          'Common causes: missing API keys, Python dependency issues, or port conflicts.'
+        );
+      }
+      this._isRunning = true;
+    })().catch((err) => {
+      this.startPromise = null; // Reset so next call can retry
+      if (this.process) {
+        try { this.process.kill(); } catch {}
+        this.process = null;
+      }
+      throw err;
     });
 
     return this.startPromise;
   }
 
-  public async waitForHealth(timeoutMs = 10000): Promise<boolean> {
+  /**
+   * Re-validate proxy health before making API calls.
+   * If the proxy was previously healthy but has since died, attempts to restart it.
+   */
+  public async ensureHealthy(): Promise<boolean> {
+    // Try health ping with retries to avoid restarting on transient hiccups
+    for (let i = 0; i < 3; i++) {
+      try {
+        const res = await fetch(`${this.getBaseUrl()}/health`, { signal: AbortSignal.timeout(5000) });
+        if (res.ok) {
+          this._isHealthy = true;
+          this._isRunning = true;
+          return true;
+        }
+      } catch {
+        // Proxy may be slow or temporarily unavailable
+      }
+      if (i < 2) await new Promise(r => setTimeout(r, 1000));
+    }
+
+    // Proxy not responding after retries - restart
+    this._isHealthy = false;
+    this._isRunning = false;
+    this.healthPromise = null;
+    this.startPromise = null;
+    this.initPromise = null;
+
+    // Kill stale process if any
+    if (this.process) {
+      try { this.process.kill(); } catch {}
+      this.process = null;
+    }
+
+    try {
+      await this.start();
+      return this._isHealthy;
+    } catch {
+      return false;
+    }
+  }
+
+  public async waitForHealth(timeoutMs = 20000): Promise<boolean> {
     // If already confirmed healthy, return immediately
     if (this._isHealthy) return true;
 

@@ -57,6 +57,110 @@ export interface AIFixDiffRequest {
 const VALID_SEVERITIES = ['critical', 'major', 'minor', 'info'] as const
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// RETRY & RESILIENCE
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const DEFAULT_FETCH_TIMEOUT_MS = 120_000 // 2 minutes per request
+const MAX_RETRIES = 3
+const INITIAL_BACKOFF_MS = 1000
+
+function isRetryableError(error: unknown, wasCallerAbort: boolean): boolean {
+  if (error instanceof TypeError) return true // network errors (fetch failures, DNS, connection refused)
+  if (error instanceof DOMException && error.name === 'AbortError') {
+    // Internal timeout aborts should be retried; caller-initiated aborts should not
+    return !wasCallerAbort
+  }
+  const msg = String((error as Error)?.message ?? '').toLowerCase()
+  return (
+    msg.includes('econnrefused') ||
+    msg.includes('econnreset') ||
+    msg.includes('etimedout') ||
+    msg.includes('enotfound') ||
+    msg.includes('fetch failed') ||
+    msg.includes('network') ||
+    msg.includes('socket hang up') ||
+    msg.includes('epipe') ||
+    msg.includes('unable to connect') ||
+    msg.includes('aborted') ||
+    msg.includes('timeout')
+  )
+}
+
+function isRetryableStatus(status: number): boolean {
+  return status === 429 || status === 502 || status === 503 || status === 504 || status === 408
+}
+
+async function fetchWithRetry(
+  url: string,
+  options: RequestInit,
+  {
+    maxRetries = MAX_RETRIES,
+    timeoutMs = DEFAULT_FETCH_TIMEOUT_MS,
+    initialBackoffMs = INITIAL_BACKOFF_MS,
+  }: { maxRetries?: number; timeoutMs?: number; initialBackoffMs?: number } = {}
+): Promise<Response> {
+  let lastError: Error | undefined
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    let callerAborted = false
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), timeoutMs)
+    const callerSignal = options.signal
+    const onCallerAbort = () => { callerAborted = true; controller.abort() }
+
+    try {
+      // Merge abort signals - respect caller's signal too
+      if (callerSignal?.aborted) {
+        callerAborted = true
+        throw new DOMException('Aborted', 'AbortError')
+      }
+
+      callerSignal?.addEventListener('abort', onCallerAbort, { once: true })
+
+      const response = await fetch(url, {
+        ...options,
+        signal: controller.signal,
+      })
+
+      if (isRetryableStatus(response.status) && attempt < maxRetries) {
+        try {
+          await response.text()
+        } catch {
+          // Ignore failures while draining response body
+        }
+        const backoff = initialBackoffMs * Math.pow(2, attempt)
+        const jitter = Math.random() * backoff * 0.3
+        await new Promise(r => setTimeout(r, backoff + jitter))
+        continue
+      }
+
+      return response
+    } catch (err) {
+      lastError = err as Error
+
+      if (!isRetryableError(err, callerAborted) || attempt >= maxRetries) break
+
+      const backoff = initialBackoffMs * Math.pow(2, attempt)
+      const jitter = Math.random() * backoff * 0.3
+      await new Promise(r => setTimeout(r, backoff + jitter))
+    } finally {
+      clearTimeout(timeout)
+      callerSignal?.removeEventListener('abort', onCallerAbort)
+    }
+  }
+
+  const hint = lastError?.message?.toLowerCase().includes('econnrefused')
+    ? ' (Is the AI proxy running? Check ~/.kittydiff/litellm.log for details)'
+    : lastError?.message?.toLowerCase().includes('abort')
+      ? ' (Request timed out - the AI proxy may be overloaded or unresponsive)'
+      : ''
+
+  throw new Error(
+    `Failed to connect to AI proxy after ${maxRetries + 1} attempts: ${lastError?.message ?? 'Unknown error'}${hint}`
+  )
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // CONSTANTS
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -363,7 +467,7 @@ export async function reviewCode(
   }
 
   // Legacy path without tools
-  const response = await fetch(`${proxyUrl}/v1/chat/completions`, {
+  const response = await fetchWithRetry(`${proxyUrl}/v1/chat/completions`, {
     method: 'POST',
     headers,
     body: JSON.stringify({
@@ -673,7 +777,7 @@ async function runToolEnabledReviewForBugs(
   const maxToolCalls = toolsConfig.maxToolCalls
 
   while (toolCallCount < maxToolCalls) {
-    const response = await fetch(`${proxyUrl}/v1/chat/completions`, {
+    const response = await fetchWithRetry(`${proxyUrl}/v1/chat/completions`, {
       method: 'POST',
       headers,
       body: JSON.stringify({
@@ -1309,7 +1413,7 @@ async function runUngroundedCodebaseReviewForBugs(
   proxyUrl: string,
   headers: Record<string, string>
 ): Promise<Bug[]> {
-  const response = await fetch(`${proxyUrl}/v1/chat/completions`, {
+  const response = await fetchWithRetry(`${proxyUrl}/v1/chat/completions`, {
     method: 'POST',
     headers,
     body: JSON.stringify({
@@ -1363,7 +1467,7 @@ async function callToolOnce(
   proxyUrl: string,
   headers: Record<string, string>
 ): Promise<unknown> {
-  const response = await fetch(`${proxyUrl}/v1/chat/completions`, {
+  const response = await fetchWithRetry(`${proxyUrl}/v1/chat/completions`, {
     method: 'POST',
     headers,
     body: JSON.stringify({
@@ -1527,7 +1631,7 @@ export async function generateFixDiff(
     `--- DIFF END ---`,
   ].join("\n")
 
-  const response = await fetch(`${proxyUrl}/v1/chat/completions`, {
+  const response = await fetchWithRetry(`${proxyUrl}/v1/chat/completions`, {
     method: 'POST',
     headers,
     body: JSON.stringify({
